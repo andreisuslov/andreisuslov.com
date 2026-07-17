@@ -348,6 +348,10 @@ fetch("/api/content", { credentials: "same-origin" })
   .then((res) => (res.ok ? res.json() : null))
   .then((content) => {
     if (content && typeof content === "object" && !Array.isArray(content)) {
+      // Never clobber an in-progress edit: if the owner is already editing,
+      // skip the upgrade (the fetch resolves at load, before a human could log
+      // in and type, but guard it defensively as more async lands in B5–B7).
+      if (document.body.classList.contains("editing")) return;
       // Replace the working copy in place so editor.js keeps its `state`
       // reference (it reads the outer global by name).
       for (const key of Object.keys(state)) delete state[key];

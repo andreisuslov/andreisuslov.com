@@ -519,6 +519,10 @@
           }
         }
         hideToolbar();
+        // Still at the owner's entry point? Offer sign-in again immediately —
+        // onHashChange won't fire (the hash didn't change), so a blank page
+        // would otherwise strand the owner until reload (mirrors the 401 path).
+        if (location.hash === "#edit") showSignIn();
       });
   }
 
@@ -543,7 +547,12 @@
 
   function onHashChange() {
     if (isEditorUser) return;
-    if (location.hash === "#edit") showSignIn();
+    if (location.hash === "#edit") {
+      showSignIn();
+    } else {
+      // Left the owner's entry point: remove the sign-in affordance.
+      hideSignIn();
+    }
   }
 
   function initEditor() {
