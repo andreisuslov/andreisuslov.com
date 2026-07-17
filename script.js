@@ -242,6 +242,44 @@ function initScrollEffects() {
   reveal();
 }
 
+// --- Face-swap hover (only react over the face's opaque pixels) ---
+
+function initFaceHover() {
+  const swap = document.querySelector(".face-swap");
+  const defaultFace = swap?.querySelector(".face-swap__face--default image");
+  if (!swap || !defaultFace) return;
+
+  const src = defaultFace.getAttribute("href");
+  const probe = new Image();
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+  probe.onload = () => {
+    canvas.width = probe.naturalWidth;
+    canvas.height = probe.naturalHeight;
+    ctx.drawImage(probe, 0, 0);
+  };
+  probe.src = src;
+
+  const overFace = (e) => {
+    if (!canvas.width) return false;
+    const rect = swap.getBoundingClientRect();
+    const x = Math.floor(((e.clientX - rect.left) / rect.width) * canvas.width);
+    const y = Math.floor(((e.clientY - rect.top) / rect.height) * canvas.height);
+    if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return false;
+    return ctx.getImageData(x, y, 1, 1).data[3] > 10;
+  };
+
+  swap.addEventListener("mousemove", (e) => {
+    const on = overFace(e);
+    swap.classList.toggle("is-face-hover", on);
+    swap.style.cursor = on ? "pointer" : "default";
+  });
+  swap.addEventListener("mouseleave", () => {
+    swap.classList.remove("is-face-hover");
+  });
+}
+
 // --- Init (DATA is loaded from data.js) ---
 
 renderMeta(DATA.meta);
@@ -257,3 +295,4 @@ if (DATA.publications) {
 }
 renderContact(DATA.contact);
 initScrollEffects();
+initFaceHover();

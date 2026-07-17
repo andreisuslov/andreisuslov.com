@@ -161,12 +161,13 @@ section {
   line-height: 1.75;
 }
 
-/* Face-swap component (grinning face on hover) */
+/* Face-swap component — grinning face when the cursor is over the face pixels
+   (not the surrounding box). The .is-face-hover class is toggled from JS by
+   sampling the portrait's alpha channel under the cursor. */
 .face-swap {
   position: relative;
   width: 180px;
   aspect-ratio: 724 / 1086;
-  cursor: pointer;
 }
 
 .face-swap__face {
@@ -174,6 +175,7 @@ section {
   inset: 0;
   width: 100%;
   height: 100%;
+  pointer-events: none;
   transition: opacity var(--transition-base);
 }
 
@@ -181,11 +183,11 @@ section {
   opacity: 0;
 }
 
-.face-swap:hover .face-swap__face--default {
+.face-swap.is-face-hover .face-swap__face--default {
   opacity: 0;
 }
 
-.face-swap:hover .face-swap__face--hover {
+.face-swap.is-face-hover .face-swap__face--hover {
   opacity: 1;
 }
 
