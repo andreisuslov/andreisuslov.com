@@ -492,6 +492,28 @@ section {
   color: #ffffff;
 }
 
+/* ===== INLINE TEXT EDITING (only when body.editing is active) ===== */
+/* Affordances are scoped under body.editing so the public render is untouched. */
+body.editing [data-edit] {
+  cursor: text;
+  outline: 1px dashed var(--color-border);
+  outline-offset: 3px;
+  border-radius: 3px;
+  transition: outline-color var(--transition-fast),
+    background-color var(--transition-fast);
+}
+
+body.editing [data-edit]:hover {
+  outline-color: var(--color-accent);
+  background-color: var(--color-card-hover);
+}
+
+body.editing [data-edit]:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+  background-color: var(--color-card-bg);
+}
+
 /* ===== RESPONSIVE — MOBILE ===== */
 @media (max-width: 480px) {
   :root {

@@ -48,32 +48,43 @@ function renderNav(nav) {
   const el = document.getElementById("nav-logo");
   el.textContent = nav.name;
   el.href = nav.href;
+  el.setAttribute("data-edit", "nav.name");
 }
 
 function renderHero(hero) {
-  document.getElementById("hero-heading").textContent = hero.heading;
-  document.getElementById("hero-text").textContent = hero.text;
+  const heading = document.getElementById("hero-heading");
+  heading.textContent = hero.heading;
+  heading.setAttribute("data-edit", "hero.heading");
+
+  const text = document.getElementById("hero-text");
+  text.textContent = hero.text;
+  text.setAttribute("data-edit", "hero.text");
 }
 
 function renderAbout(about) {
   const textEl = document.getElementById("about-text");
   textEl.replaceChildren();
   buildRichContent(about.summary, textEl);
+  // #about-text maps to the FULL about.summary. Editing collapses the rich
+  // summary array to a single { type:"text" } segment (see editor.js). That is
+  // acceptable here because the summary currently has no link segments.
+  textEl.setAttribute("data-edit", "about.summary");
 
   const list = document.getElementById("about-list");
   list.replaceChildren();
-  about.learning.forEach((item) => {
+  about.learning.forEach((item, i) => {
     const li = document.createElement("li");
     li.textContent = item;
+    li.setAttribute("data-edit", "about.learning." + i);
     list.appendChild(li);
   });
 }
 
-function renderProjectCards(items, gridId) {
+function renderProjectCards(items, gridId, basePath) {
   const grid = document.getElementById(gridId);
   grid.replaceChildren();
 
-  items.forEach((p) => {
+  items.forEach((p, i) => {
     let card;
     if (p.github) {
       card = document.createElement("a");
@@ -88,18 +99,21 @@ function renderProjectCards(items, gridId) {
     const name = document.createElement("h3");
     name.className = "project-card__name";
     name.textContent = p.name;
+    name.setAttribute("data-edit", basePath + "." + i + ".name");
     card.appendChild(name);
 
     if (p.course) {
       const course = document.createElement("span");
       course.className = "project-card__course";
       course.textContent = p.course;
+      course.setAttribute("data-edit", basePath + "." + i + ".course");
       card.appendChild(course);
     }
 
     const desc = document.createElement("p");
     desc.className = "project-card__desc";
     desc.textContent = p.description;
+    desc.setAttribute("data-edit", basePath + "." + i + ".description");
     card.appendChild(desc);
 
     const footer = document.createElement("div");
@@ -132,20 +146,23 @@ function renderProjectCards(items, gridId) {
 }
 
 function renderPersonalProjects(data) {
-  document.getElementById("personal-projects-heading").textContent =
-    data.heading;
-  renderProjectCards(data.items, "personal-projects-grid");
+  const heading = document.getElementById("personal-projects-heading");
+  heading.textContent = data.heading;
+  heading.setAttribute("data-edit", "personalProjects.heading");
+  renderProjectCards(data.items, "personal-projects-grid", "personalProjects.items");
 }
 
 function renderCourseProjects(data) {
-  document.getElementById("course-projects-heading").textContent =
-    data.heading;
-  renderProjectCards(data.items, "course-projects-grid");
+  const heading = document.getElementById("course-projects-heading");
+  heading.textContent = data.heading;
+  heading.setAttribute("data-edit", "courseProjects.heading");
+  renderProjectCards(data.items, "course-projects-grid", "courseProjects.items");
 }
 
 function renderPublications(publications) {
-  document.getElementById("publications-heading").textContent =
-    publications.heading;
+  const pubHeading = document.getElementById("publications-heading");
+  pubHeading.textContent = publications.heading;
+  pubHeading.setAttribute("data-edit", "publications.heading");
   const list = document.getElementById("publications-list");
   list.replaceChildren();
 
@@ -206,11 +223,18 @@ function renderPublications(publications) {
 }
 
 function renderContact(contact) {
-  document.getElementById("contact-heading").textContent = contact.heading;
-  document.getElementById("contact-text").textContent = contact.text;
+  const heading = document.getElementById("contact-heading");
+  heading.textContent = contact.heading;
+  heading.setAttribute("data-edit", "contact.heading");
+
+  const text = document.getElementById("contact-text");
+  text.textContent = contact.text;
+  text.setAttribute("data-edit", "contact.text");
 
   if (contact.location) {
-    document.getElementById("contact-location").textContent = contact.location;
+    const location = document.getElementById("contact-location");
+    location.textContent = contact.location;
+    location.setAttribute("data-edit", "contact.location");
   }
 
   const socials = document.getElementById("contact-socials");
