@@ -53,6 +53,7 @@ COOKIE_NAME = "site_session"
 SESSION_TTL = 30 * 24 * 60 * 60  # 30 days, in seconds
 MAX_BODY = 1024 * 1024  # 1 MB cap on request bodies
 TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
+GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
 
 # Extension -> MIME type. Kept deliberately small; unknown types fall back to
 # application/octet-stream.
@@ -92,6 +93,8 @@ def verify_google_token(credential, client_id):
         return None
 
     if not isinstance(claims, dict):
+        return None
+    if claims.get("iss") not in GOOGLE_ISSUERS:
         return None
     if claims.get("aud") != client_id:
         return None
@@ -133,6 +136,17 @@ class App:
         os.makedirs(self.data_dir, exist_ok=True)
         self.content_path = os.path.join(self.data_dir, "content.json")
         self.sessions_path = os.path.join(self.data_dir, "sessions.json")
+
+        # Warn loudly if the data dir lives under the served site root: the
+        # static handler already refuses to serve it, but keeping sessions out
+        # of the document root entirely is the safer posture.
+        if (self.data_dir == self.site_dir
+                or self.data_dir.startswith(self.site_dir + os.sep)):
+            sys.stderr.write(
+                f"WARNING: data dir ({self.data_dir}) is inside the site root "
+                f"({self.site_dir}). Static serving of it is blocked, but "
+                f"prefer a --data path outside the site.\n"
+            )
 
         self._lock = threading.Lock()
 
@@ -224,6 +238,9 @@ def _atomic_write_json(path, obj):
 class Handler(BaseHTTPRequestHandler):
     server_version = "andreisuslov-com/1.0"
     protocol_version = "HTTP/1.1"
+    # Per-connection socket timeout: drop slow clients rather than let a worker
+    # thread be held open indefinitely (slowloris defense).
+    timeout = 30
 
     @property
     def app(self) -> App:
@@ -297,7 +314,12 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             length = 0
         if length > MAX_BODY:
-            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "body too large"})
+            # We refuse to drain a huge body; close the connection instead so
+            # the unread bytes don't desync the next request under keep-alive.
+            self.close_connection = True
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                       {"error": "body too large"},
+                       {"Connection": "close"})
             return False, b""
         if length <= 0:
             return True, b""
@@ -370,12 +392,30 @@ class Handler(BaseHTTPRequestHandler):
     def _static(self, url_path):
         # Decode %xx, strip the leading slash, and join under the site root.
         rel = urllib.parse.unquote(url_path).lstrip("/")
+
+        # Defensive segment checks: never serve dotfiles (e.g. .git,
+        # .sessions.json.tmp) or anything explicitly named `_data`, regardless
+        # of where the data dir actually lives.
+        segments = [s for s in rel.split("/") if s not in ("", ".")]
+        for seg in segments:
+            if seg.startswith(".") or seg == "_data":
+                return self._finish(HTTPStatus.NOT_FOUND, self._send,
+                                    "404 Not Found", "text/plain; charset=utf-8")
+
         target = os.path.realpath(os.path.join(self.app.site_dir, rel))
 
         # Directory-traversal protection: the resolved path must stay inside
         # the site root (or be the root itself).
         site_root = self.app.site_dir
         if target != site_root and not target.startswith(site_root + os.sep):
+            return self._finish(HTTPStatus.NOT_FOUND, self._send,
+                                "404 Not Found", "text/plain; charset=utf-8")
+
+        # Never serve anything inside the data dir, even if it sits under the
+        # site root (the documented default used to put it there). This is the
+        # primary defense and holds regardless of --data location.
+        data_root = self.app.data_dir
+        if target == data_root or target.startswith(data_root + os.sep):
             return self._finish(HTTPStatus.NOT_FOUND, self._send,
                                 "404 Not Found", "text/plain; charset=utf-8")
 
@@ -643,9 +683,60 @@ def selftest():
         check("7b. GET /api/me after logout -> editor:false",
               status == 200 and body.get("editor") is False)
 
-        # Bonus: static serving of index.html
+        # 8. The session store must NEVER be served over HTTP. In this selftest
+        #    layout the data dir lives under the site root (tmpdir/_data), so a
+        #    naive static handler would happily serve _data/sessions.json.
+        assert os.path.exists(app.sessions_path), "sessions file should exist"
+        s_dot, _, _ = request("GET", "/_data/sessions.json")
+        s_content, _, _ = request("GET", "/_data/content.json")
+        check("8. Session/content store not served over HTTP -> 404",
+              s_dot == 404 and s_content == 404)
+
+        # 9. verify_google_token must require a Google `iss` claim. Fake the
+        #    network so this stays offline.
+        import urllib.request as _urlreq
+
+        class _FakeResp:
+            def __init__(self, payload):
+                self.status = 200
+                self._data = json.dumps(payload).encode("utf-8")
+
+            def read(self):
+                return self._data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def _fake_urlopen_factory(payload):
+            def _fake(req, timeout=None):
+                return _FakeResp(payload)
+            return _fake
+
+        base_claims = {
+            "aud": client_id, "email": allow_email,
+            "email_verified": "true", "exp": str(int(time.time()) + 3600),
+        }
+        orig_urlopen = _urlreq.urlopen
+        try:
+            _urlreq.urlopen = _fake_urlopen_factory(
+                {**base_claims, "iss": "https://accounts.google.com"})
+            iss_good = verify_google_token("x", client_id) is not None
+            _urlreq.urlopen = _fake_urlopen_factory(
+                {**base_claims, "iss": "https://evil.example.com"})
+            iss_bad = verify_google_token("x", client_id) is None
+            _urlreq.urlopen = _fake_urlopen_factory(dict(base_claims))  # no iss
+            iss_missing = verify_google_token("x", client_id) is None
+        finally:
+            _urlreq.urlopen = orig_urlopen
+        check("9. verify_google_token requires a Google iss claim",
+              iss_good and iss_bad and iss_missing)
+
+        # 10. Static serving of index.html still works.
         status, _, _ = request("GET", "/")
-        check("8. GET / serves index.html -> 200", status == 200)
+        check("10. GET / serves index.html -> 200", status == 200)
 
     finally:
         httpd.shutdown()
@@ -668,8 +759,10 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="andreisuslov.com backend server")
     parser.add_argument("--site", default=here,
                         help="static files root (default: this file's directory)")
-    parser.add_argument("--data", default=os.path.join(os.getcwd(), "_data"),
-                        help="writable dir for content.json / sessions.json")
+    parser.add_argument("--data", default=None,
+                        help="writable dir for content.json / sessions.json "
+                             "(default: a sibling of --site, OUTSIDE the served "
+                             "root: <site>/../andreisuslov-site-data)")
     parser.add_argument("--client-id", default=None,
                         help="Google web OAuth client id (env GOOGLE_SITE_CLIENT_ID)")
     parser.add_argument("--allow-email", default="truvord@gmail.com",
@@ -690,7 +783,12 @@ def main(argv=None):
         return 0 if ok else 1
 
     client_id = args.client_id or os.environ.get("GOOGLE_SITE_CLIENT_ID")
-    app = App(site_dir=args.site, data_dir=args.data,
+    # Default the data dir to a sibling of the site root so it is never inside
+    # the served document root.
+    site_real = os.path.realpath(args.site)
+    data_dir = args.data or os.path.join(os.path.dirname(site_real),
+                                         "andreisuslov-site-data")
+    app = App(site_dir=args.site, data_dir=data_dir,
               client_id=client_id, allow_email=args.allow_email)
     run(app, args.host, args.port)
     return 0

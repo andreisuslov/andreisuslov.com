@@ -34,8 +34,11 @@ GOOGLE_SITE_CLIENT_ID=… python3 server.py --port 8000
 # open http://localhost:8000
 ```
 
-Content and sessions are written under `--data` (default `./_data`). Run the
-in-process test suite (no network) with:
+Content and sessions are written under `--data`. The default is a sibling of
+the site root (`<site>/../andreisuslov-site-data`) so the session store is
+never inside the served document root — the static handler also refuses to
+serve the data dir, dotfiles, and any `_data` path. Run the in-process test
+suite (no network) with:
 
 ```bash
 python3 server.py --selftest
