@@ -1,4 +1,7 @@
 .DS_Store
 
+# Backend runtime data (content.json, sessions.json)
+_data/
+
 # Standalone AAA Life deck, served locally but kept out of this repo
 test-core-presentation/

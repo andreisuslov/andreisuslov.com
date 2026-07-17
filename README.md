@@ -18,3 +18,25 @@ To change copy or add a project, edit `data.js`. No build step.
 python3 -m http.server 8000
 # open http://localhost:8000
 ```
+
+## Backend
+
+`server.py` is a single-file, stdlib-only Python 3 server (`http.server`). It
+serves the static site, authenticates the owner via Google Sign-In (ID-token
+flow, restricted to one email), and exposes a small content API
+(`GET`/`PUT /api/content`) the front-end uses to load and save `content.json`.
+
+Run it locally (a Google web OAuth client id is needed only for sign-in;
+static serving works without one):
+
+```bash
+GOOGLE_SITE_CLIENT_ID=… python3 server.py --port 8000
+# open http://localhost:8000
+```
+
+Content and sessions are written under `--data` (default `./_data`). Run the
+in-process test suite (no network) with:
+
+```bash
+python3 server.py --selftest
+```
