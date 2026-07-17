@@ -57,9 +57,11 @@ function renderHero(hero) {
 
 function renderAbout(about) {
   const textEl = document.getElementById("about-text");
+  textEl.replaceChildren();
   buildRichContent(about.summary, textEl);
 
   const list = document.getElementById("about-list");
+  list.replaceChildren();
   about.learning.forEach((item) => {
     const li = document.createElement("li");
     li.textContent = item;
@@ -69,6 +71,7 @@ function renderAbout(about) {
 
 function renderProjectCards(items, gridId) {
   const grid = document.getElementById(gridId);
+  grid.replaceChildren();
 
   items.forEach((p) => {
     let card;
@@ -144,6 +147,7 @@ function renderPublications(publications) {
   document.getElementById("publications-heading").textContent =
     publications.heading;
   const list = document.getElementById("publications-list");
+  list.replaceChildren();
 
   publications.items.forEach((pub) => {
     const card = document.createElement("a");
@@ -210,6 +214,7 @@ function renderContact(contact) {
   }
 
   const socials = document.getElementById("contact-socials");
+  socials.replaceChildren();
   contact.socials.forEach((s) => {
     const a = document.createElement("a");
     a.href = s.url;
@@ -282,17 +287,26 @@ function initFaceHover() {
 
 // --- Init (DATA is loaded from data.js) ---
 
-renderMeta(DATA.meta);
-renderNav(DATA.nav);
-renderHero(DATA.hero);
-renderAbout(DATA.about);
-renderPersonalProjects(DATA.personalProjects);
-renderCourseProjects(DATA.courseProjects);
-if (DATA.publications) {
-  renderPublications(DATA.publications);
-} else {
-  document.querySelector(".publications")?.remove();
+// Mutable working copy of the content. Re-render at any time via renderAll(state).
+const state = structuredClone(DATA);
+
+function renderAll(state) {
+  renderMeta(state.meta);
+  renderNav(state.nav);
+  renderHero(state.hero);
+  renderAbout(state.about);
+  renderPersonalProjects(state.personalProjects);
+  renderCourseProjects(state.courseProjects);
+  const publicationsSection = document.querySelector(".publications");
+  if (state.publications) {
+    publicationsSection?.removeAttribute("hidden");
+    renderPublications(state.publications);
+  } else {
+    publicationsSection?.setAttribute("hidden", "");
+  }
+  renderContact(state.contact);
 }
-renderContact(DATA.contact);
+
+renderAll(state);
 initScrollEffects();
 initFaceHover();
