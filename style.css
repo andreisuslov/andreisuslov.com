@@ -443,6 +443,55 @@ section {
   }
 }
 
+/* ===== EDITOR SHELL (only rendered when the dev gate is active) ===== */
+/* All editor styling is scoped to .editor-toolbar and body.editing so it can
+   never affect the public render. */
+.editor-toolbar {
+  position: fixed;
+  right: var(--space-lg);
+  bottom: var(--space-lg);
+  z-index: 1000;
+  display: flex;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
+}
+
+.editor-toolbar__btn {
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  padding: var(--space-xs) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  cursor: pointer;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.editor-toolbar__btn:hover:not(:disabled) {
+  background: var(--color-card-bg);
+  border-color: var(--color-text);
+}
+
+.editor-toolbar__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.editor-toolbar__btn--edit[aria-pressed="true"] {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #ffffff;
+}
+
 /* ===== RESPONSIVE — MOBILE ===== */
 @media (max-width: 480px) {
   :root {
