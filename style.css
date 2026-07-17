@@ -135,19 +135,16 @@ section {
 
 /* ===== HERO ===== */
 .hero {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2xl);
+  position: relative;
   padding-top: var(--space-4xl);
   padding-bottom: var(--space-3xl);
 }
 
+/* Face sits in the left gutter so the heading and text keep full content width */
 .hero__media {
-  flex-shrink: 0;
-}
-
-.hero__body {
-  min-width: 0;
+  position: absolute;
+  top: var(--space-4xl);
+  left: calc(-1 * (180px + var(--space-xl)));
 }
 
 .hero__heading {
@@ -161,7 +158,6 @@ section {
 .hero__text {
   font-size: var(--font-size-lg);
   color: var(--color-text-muted);
-  max-width: 540px;
   line-height: 1.75;
 }
 
@@ -432,14 +428,16 @@ section {
     grid-template-columns: 1fr;
   }
 
-  .hero {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-xl);
-  }
-
   .face-swap {
     width: 150px;
+  }
+}
+
+/* ===== RESPONSIVE — NOT ENOUGH GUTTER FOR THE FACE ===== */
+@media (max-width: 1180px) {
+  .hero__media {
+    position: static;
+    margin-bottom: var(--space-xl);
   }
 }
 
