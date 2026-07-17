@@ -74,8 +74,13 @@ function renderAbout(about) {
   list.replaceChildren();
   about.learning.forEach((item, i) => {
     const li = document.createElement("li");
-    li.textContent = item;
-    li.setAttribute("data-edit", "about.learning." + i);
+    // The editable text lives on an inner span so the editor can append its
+    // control cluster to the <li> (a sibling of the span) without those buttons
+    // becoming part of the contenteditable element's textContent.
+    const span = document.createElement("span");
+    span.textContent = item;
+    span.setAttribute("data-edit", "about.learning." + i);
+    li.appendChild(span);
     list.appendChild(li);
   });
 }
