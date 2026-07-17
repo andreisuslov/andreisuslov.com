@@ -514,6 +514,124 @@ body.editing [data-edit]:focus {
   background-color: var(--color-card-bg);
 }
 
+/* ===== STRUCTURAL BLOCK CONTROLS (Task 4, only when body.editing) ===== */
+/* Editor chrome for add/delete/reorder. Injected only in edit mode and removed
+   on teardown, so it can never reach the public render. */
+body.editing .project-card,
+body.editing .about__list li,
+body.editing .contact__social-link {
+  position: relative;
+}
+
+.editor-block-controls {
+  display: none;
+}
+
+body.editing .editor-block-controls {
+  display: inline-flex;
+  gap: 2px;
+  z-index: 5;
+}
+
+.editor-block-controls--card {
+  position: absolute;
+  top: var(--space-sm);
+  right: var(--space-sm);
+}
+
+.editor-block-controls--list {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+/* Reserve space so list text doesn't run under the controls. */
+body.editing .about__list li {
+  padding-right: 5rem;
+}
+
+.editor-block-controls--social {
+  position: absolute;
+  top: calc(100% + var(--space-xs));
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.editor-block-controls__btn {
+  font-family: var(--font-family);
+  font-size: var(--font-size-xs);
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast),
+    background-color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.editor-block-controls__btn:hover:not(:disabled) {
+  color: var(--color-text);
+  border-color: var(--color-text);
+  background: var(--color-card-bg);
+}
+
+.editor-block-controls__btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.editor-block-controls__del:hover:not(:disabled) {
+  color: #b91c1c;
+  border-color: #b91c1c;
+}
+
+/* Give the socials row room for the controls that sit below each icon. */
+body.editing .contact__socials {
+  margin-bottom: var(--space-3xl);
+}
+
+.editor-add {
+  display: none;
+}
+
+body.editing .editor-add {
+  display: block;
+  margin-top: var(--space-md);
+}
+
+.editor-add__btn {
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  padding: var(--space-xs) var(--space-md);
+  border: 1px dashed var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast),
+    background-color var(--transition-fast);
+}
+
+.editor-add__btn:hover {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-card-bg);
+}
+
 /* ===== RESPONSIVE — MOBILE ===== */
 @media (max-width: 480px) {
   :root {
