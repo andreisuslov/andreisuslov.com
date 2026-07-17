@@ -492,6 +492,70 @@ section {
   color: #ffffff;
 }
 
+/* ===== OWNER SIGN-IN PANEL (only injected for the owner via #edit) ===== */
+/* Never present for ordinary visitors; the GIS script is loaded lazily and the
+   panel only appears when the owner explicitly enters at #edit. */
+.editor-signin {
+  position: fixed;
+  right: var(--space-lg);
+  bottom: var(--space-lg);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
+}
+
+.editor-signin__label {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.editor-signin__msg {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.editor-signin__msg:empty {
+  display: none;
+}
+
+/* ===== EDITOR TOAST (save feedback; scoped, transient) ===== */
+.editor-toast {
+  position: fixed;
+  left: 50%;
+  bottom: var(--space-lg);
+  transform: translateX(-50%) translateY(1rem);
+  z-index: 1100;
+  padding: var(--space-sm) var(--space-lg);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-text);
+  color: var(--color-bg);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-base), transform var(--transition-base);
+}
+
+.editor-toast--show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.editor-toast--error {
+  background: #b91c1c;
+  border-color: #b91c1c;
+  color: #ffffff;
+}
+
 /* ===== INLINE TEXT EDITING (only when body.editing is active) ===== */
 /* Affordances are scoped under body.editing so the public render is untouched. */
 body.editing [data-edit] {

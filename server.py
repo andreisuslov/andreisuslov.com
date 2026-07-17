@@ -351,6 +351,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/config":
+            return self._api_config()
         if path == "/api/me":
             return self._api_me()
         if path == "/api/content":
@@ -477,6 +479,12 @@ class Handler(BaseHTTPRequestHandler):
         cookie = self._set_cookie_header("", 0)
         self._json(HTTPStatus.OK, {"ok": True}, {"Set-Cookie": cookie})
         self._log(HTTPStatus.OK)
+
+    def _api_config(self):
+        # Public: lets the front-end configure the Google Sign-In button without
+        # hardcoding the web client id. Never cached — the id may change per env.
+        return self._finish(HTTPStatus.OK, self._json,
+                            {"googleClientId": self.app.client_id or ""})
 
     def _api_me(self):
         rec = self._session()
@@ -737,6 +745,18 @@ def selftest():
         # 10. Static serving of index.html still works.
         status, _, _ = request("GET", "/")
         check("10. GET / serves index.html -> 200", status == 200)
+
+        # 11. /api/config exposes the configured client id (public, no auth).
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/api/config")
+        cfg_resp = conn.getresponse()
+        cfg_body = json.loads(cfg_resp.read())
+        cfg_cache = cfg_resp.getheader("Cache-Control")
+        conn.close()
+        check("11. GET /api/config returns the configured client id (no-store)",
+              cfg_resp.status == 200
+              and cfg_body.get("googleClientId") == client_id
+              and cfg_cache == "no-store")
 
     finally:
         httpd.shutdown()

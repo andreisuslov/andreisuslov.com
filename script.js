@@ -336,6 +336,25 @@ function renderAll(state) {
   renderContact(state.contact);
 }
 
+// Render immediately from the embedded DATA so there is never a blank flash,
+// then ask the server for the authoritative content. If content.json exists
+// (200 + object) we replace `state` and re-render; on 404 or any error we keep
+// the DATA-based render, so the static file still works standalone.
 renderAll(state);
 initScrollEffects();
 initFaceHover();
+
+fetch("/api/content", { credentials: "same-origin" })
+  .then((res) => (res.ok ? res.json() : null))
+  .then((content) => {
+    if (content && typeof content === "object" && !Array.isArray(content)) {
+      // Replace the working copy in place so editor.js keeps its `state`
+      // reference (it reads the outer global by name).
+      for (const key of Object.keys(state)) delete state[key];
+      Object.assign(state, content);
+      renderAll(state);
+    }
+  })
+  .catch(() => {
+    // Offline / server down / bad JSON: the DATA-based render already stands.
+  });

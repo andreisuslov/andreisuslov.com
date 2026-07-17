@@ -9,13 +9,17 @@
 (function () {
   "use strict";
 
-  // TEMPORARY dev gate — replaced by a Google-auth check in Task 6.
-  function isEditor() {
-    return location.hash === "#edit";
-  }
+  // Real auth state. The owner is "editor" once /api/me confirms a valid
+  // session cookie. `#edit` is the owner's entry point for signing in when no
+  // session exists yet; it no longer grants edit access by itself.
+  let isEditorUser = false;
 
   let toolbar = null;
   let editBtn = null;
+  let saveBtn = null;
+  let signinBox = null;
+  let gisPromise = null;
+  let toastTimer = null;
 
   // --- Inline text editing (Task 3) ---
 
@@ -312,12 +316,23 @@
     });
     bar.appendChild(editBtn);
 
-    const saveBtn = document.createElement("button");
+    saveBtn = document.createElement("button");
     saveBtn.type = "button";
     saveBtn.className = "editor-toolbar__btn editor-toolbar__btn--save";
     saveBtn.textContent = "Save";
-    saveBtn.disabled = true; // wired up in Task 5
+    // Only a confirmed editor session may persist; the server enforces this too.
+    saveBtn.disabled = !isEditorUser;
+    saveBtn.addEventListener("click", () => {
+      if (!saveBtn.disabled) persist(state);
+    });
     bar.appendChild(saveBtn);
+
+    const signoutBtn = document.createElement("button");
+    signoutBtn.type = "button";
+    signoutBtn.className = "editor-toolbar__btn editor-toolbar__btn--signout";
+    signoutBtn.textContent = "Sign out";
+    signoutBtn.addEventListener("click", signOut);
+    bar.appendChild(signoutBtn);
 
     return bar;
   }
@@ -334,20 +349,206 @@
       toolbar.remove();
       toolbar = null;
       editBtn = null;
+      saveBtn = null;
     }
   }
 
-  function syncEditor() {
-    if (isEditor()) {
-      showToolbar();
-    } else {
-      hideToolbar();
+  // --- Toast notifications (scoped, only appear for editor actions) ---
+
+  function toast(message, isError) {
+    let el = document.querySelector(".editor-toast");
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "editor-toast";
+      document.body.appendChild(el);
     }
+    el.textContent = message;
+    el.classList.toggle("editor-toast--error", !!isError);
+    el.classList.add("editor-toast--show");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove("editor-toast--show"), 2600);
+  }
+
+  // --- Save: persist the working state to the server ---
+
+  function persist(content) {
+    return fetch("/api/content", {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(content),
+    })
+      .then((res) => {
+        if (res.ok) {
+          toast("Saved");
+          return;
+        }
+        if (res.status === 401) {
+          // Session expired/invalid: drop back to the sign-in affordance.
+          toast("Please sign in again", true);
+          isEditorUser = false;
+          hideToolbar();
+          showSignIn();
+          return;
+        }
+        toast("Save failed", true);
+      })
+      .catch(() => toast("Save failed", true));
+  }
+
+  // --- Google Sign-In (loaded lazily; NEVER for ordinary visitors) ---
+
+  // Inject Google Identity Services exactly once, on demand.
+  function loadGis() {
+    if (gisPromise) return gisPromise;
+    gisPromise = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://accounts.google.com/gsi/client";
+      s.async = true;
+      s.defer = true;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error("gsi load failed"));
+      document.head.appendChild(s);
+    });
+    return gisPromise;
+  }
+
+  function hideSignIn() {
+    if (signinBox) {
+      signinBox.remove();
+      signinBox = null;
+    }
+  }
+
+  function signinMsg(text) {
+    const el = signinBox && signinBox.querySelector(".editor-signin__msg");
+    if (el) el.textContent = text;
+  }
+
+  // Build the sign-in panel, fetch the client id, load GIS lazily, and render
+  // Google's button. No-op if already an editor or already showing.
+  function showSignIn() {
+    if (isEditorUser || signinBox) return;
+
+    signinBox = document.createElement("div");
+    signinBox.className = "editor-signin";
+
+    const label = document.createElement("div");
+    label.className = "editor-signin__label";
+    label.textContent = "Owner sign-in";
+    signinBox.appendChild(label);
+
+    const host = document.createElement("div");
+    host.className = "editor-signin__button";
+    signinBox.appendChild(host);
+
+    const msg = document.createElement("div");
+    msg.className = "editor-signin__msg";
+    signinBox.appendChild(msg);
+
+    document.body.appendChild(signinBox);
+
+    fetch("/api/config", { credentials: "same-origin" })
+      .then((r) => r.json())
+      .then((cfg) => {
+        const clientId = cfg && cfg.googleClientId;
+        if (!clientId) {
+          signinMsg("Sign-in unavailable.");
+          return null;
+        }
+        return loadGis().then(() => clientId);
+      })
+      .then((clientId) => {
+        if (!clientId) return;
+        if (!window.google || !google.accounts || !google.accounts.id) {
+          signinMsg("Google Sign-In failed to initialize.");
+          return;
+        }
+        // The host may have been torn down while GIS loaded (e.g. hash change).
+        if (!signinBox) return;
+        google.accounts.id.initialize({
+          client_id: clientId,
+          callback: onGoogleCredential,
+        });
+        google.accounts.id.renderButton(host, {
+          theme: "outline",
+          size: "large",
+          text: "signin_with",
+        });
+      })
+      .catch(() => signinMsg("Could not load Google Sign-In."));
+  }
+
+  // GIS credential callback: exchange the ID token for a session cookie.
+  function onGoogleCredential(response) {
+    const credential = response && response.credential;
+    if (!credential) {
+      signinMsg("No credential received.");
+      return;
+    }
+    fetch("/api/auth/google", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential }),
+    })
+      .then((res) => {
+        if (!res.ok) {
+          signinMsg("Sign-in was rejected.");
+          return;
+        }
+        return refreshAuth();
+      })
+      .catch(() => signinMsg("Sign-in failed."));
+  }
+
+  function signOut() {
+    fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+    })
+      .catch(() => {})
+      .finally(() => {
+        isEditorUser = false;
+        if (window.google && google.accounts && google.accounts.id) {
+          try {
+            google.accounts.id.disableAutoSelect();
+          } catch (e) {
+            /* ignore */
+          }
+        }
+        hideToolbar();
+      });
+  }
+
+  // Ask the server who we are and reconcile the UI. Editor -> toolbar; not an
+  // editor -> nothing, unless the owner is at #edit, which offers sign-in.
+  function refreshAuth() {
+    return fetch("/api/me", { credentials: "same-origin" })
+      .then((r) => r.json())
+      .catch(() => ({ editor: false }))
+      .then((me) => {
+        isEditorUser = !!(me && me.editor);
+        if (isEditorUser) {
+          hideSignIn();
+          showToolbar();
+          if (saveBtn) saveBtn.disabled = false;
+        } else {
+          hideToolbar();
+          if (location.hash === "#edit") showSignIn();
+        }
+      });
+  }
+
+  function onHashChange() {
+    if (isEditorUser) return;
+    if (location.hash === "#edit") showSignIn();
   }
 
   function initEditor() {
-    window.addEventListener("hashchange", syncEditor);
-    syncEditor();
+    window.addEventListener("hashchange", onHashChange);
+    refreshAuth();
   }
 
   initEditor();
