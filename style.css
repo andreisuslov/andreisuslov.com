@@ -167,6 +167,17 @@ section {
   margin-top: var(--space-xl);
 }
 
+.block--image {
+  margin-top: var(--space-xl);
+}
+
+/* Uploaded image block — fits the content column, gentle rounding. */
+.image-block__img {
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+}
+
 /* Prose block — muted, larger body text (reuses the old hero/about look). */
 .richtext {
   font-size: var(--font-size-lg);

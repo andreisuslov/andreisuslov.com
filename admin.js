@@ -194,6 +194,7 @@
     heading: () => ({ level: 2, text: "New heading" }),
     richtext: () => ({ html: "<p></p>" }),
     list: () => ({ items: ["New item"] }),
+    image: () => ({ src: "", alt: "" }),
     portrait: () => ({ width: 180, offsetX: 212 }),
     projects: () => ({ items: [] }),
     experience: () => ({ items: [] }),
@@ -435,6 +436,125 @@
         markDirty();
       })
     );
+    return wrap;
+  }
+
+  // --- image block --------------------------------------------------------
+  // An upload control (raw-bytes POST to /api/uploads) plus an alt-text field.
+  // Keystrokes in the alt field only mutate `doc` + markDirty (no re-render, so
+  // focus/caret survive); a successful upload sets block.src and refreshes just
+  // this block's preview via renderPreview (guarded by the render generation).
+
+  function uploadImage(file, block, myRender, renderPreview, btn) {
+    const myScreen = screenGen;
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Uploading…";
+    const restore = () => {
+      btn.disabled = false;
+      btn.textContent = label;
+    };
+    fetch("/api/uploads", {
+      method: "POST",
+      credentials: "same-origin",
+      // Raw image bytes — the server reads Content-Type, not multipart.
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    })
+      .then((res) => {
+        if (myScreen !== screenGen) return; // signed out / screen changed
+        if (res.ok) {
+          return res.json().then((data) => {
+            block.src = (data && data.url) || "";
+            markDirty();
+            if (myRender === renderGen) renderPreview();
+            restore();
+            toast("Image uploaded", "success");
+          });
+        }
+        if (res.status === 401) {
+          // Session expired mid-upload. Mirror Save's recovery: stash the
+          // working doc, bounce to sign-in, keep dirty so beforeunload guards.
+          pendingUnsavedDoc = doc;
+          toast("Not uploaded — your session expired.", "error");
+          renderSignIn(
+            "Your session expired and your changes were NOT saved. " +
+              "Sign in again, then re-upload and click Save."
+          );
+          dirty = true;
+          return;
+        }
+        restore();
+        if (res.status === 413) {
+          toast("Image too large (max 8 MB).", "error");
+          return;
+        }
+        if (res.status === 415) {
+          toast("Unsupported image type (use PNG, JPEG, WebP or GIF).", "error");
+          return;
+        }
+        toast("Upload failed (" + res.status + ")", "error");
+      })
+      .catch(() => {
+        if (myScreen !== screenGen) return;
+        restore();
+        toast("Upload failed — network error", "error");
+      });
+  }
+
+  function buildImage(block, myRender) {
+    const wrap = el("div", "admin-field admin-image");
+
+    const preview = el("div", "admin-image__preview");
+    function renderPreview() {
+      preview.replaceChildren();
+      if (block.src) {
+        const img = el("img", "admin-image__img");
+        img.src = block.src;
+        img.alt = block.alt || "";
+        preview.appendChild(img);
+      } else {
+        preview.appendChild(
+          el("span", "admin-image__empty", "No image uploaded yet.")
+        );
+      }
+    }
+    renderPreview();
+    wrap.appendChild(preview);
+
+    // Upload control: a styled button that proxies to a hidden file input.
+    const controls = el("div", "admin-image__controls");
+    const btn = el("button", "admin-btn admin-btn--sm", "Upload image");
+    btn.type = "button";
+    const fileInput = el("input", "admin-image__file");
+    fileInput.type = "file";
+    fileInput.accept = "image/*";
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (file) uploadImage(file, block, myRender, renderPreview, btn);
+      fileInput.value = ""; // let the same file be picked again later
+    });
+    btn.addEventListener("click", () => fileInput.click());
+    controls.appendChild(btn);
+    controls.appendChild(fileInput);
+    wrap.appendChild(controls);
+
+    // Alt text (plain input, focus-preserving).
+    const altField = el("label", "admin-subfield admin-image__alt");
+    altField.appendChild(el("span", "admin-subfield__label", "Alt text"));
+    const altInput = el("input", "admin-input");
+    altInput.type = "text";
+    altInput.placeholder = "Describe the image (for screen readers)";
+    altInput.value = block.alt || "";
+    altInput.addEventListener("input", () => {
+      block.alt = altInput.value;
+      const img = preview.querySelector(".admin-image__img");
+      if (img) img.alt = block.alt; // keep preview in sync, no re-render
+      markDirty();
+    });
+    altField.appendChild(altInput);
+    wrap.appendChild(altField);
+
     return wrap;
   }
 
@@ -804,6 +924,7 @@
     heading: buildHeading,
     richtext: buildRichtext,
     list: buildList,
+    image: buildImage,
     portrait: buildPortrait,
     projects: buildProjects,
     experience: buildExperience,
@@ -889,6 +1010,7 @@
       ["heading", "Heading"],
       ["richtext", "Rich text"],
       ["list", "List"],
+      ["image", "Image"],
       ["portrait", "Portrait"],
       ["projects", "Projects"],
       ["experience", "Experience"],

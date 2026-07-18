@@ -51,9 +51,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 COOKIE_NAME = "site_session"
 SESSION_TTL = 30 * 24 * 60 * 60  # 30 days, in seconds
-MAX_BODY = 1024 * 1024  # 1 MB cap on request bodies
+MAX_BODY = 1024 * 1024  # 1 MB cap on JSON request bodies
+MAX_UPLOAD = 8 * 1024 * 1024  # 8 MB cap on uploaded image bodies
 TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
+
+# Accepted upload content-types -> the extension we store them under. The raw
+# request Content-Type must match one of these exactly (case-insensitive, minus
+# any charset/parameters); nothing else is written to disk.
+UPLOAD_MIME_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+# Reverse map used when serving an upload back out (extension -> content-type).
+UPLOAD_EXT_MIME = {ext: mime for mime, ext in UPLOAD_MIME_EXT.items()}
 
 # Extension -> MIME type. Kept deliberately small; unknown types fall back to
 # application/octet-stream.
@@ -136,6 +149,10 @@ class App:
         os.makedirs(self.data_dir, exist_ok=True)
         self.content_path = os.path.join(self.data_dir, "content.json")
         self.sessions_path = os.path.join(self.data_dir, "sessions.json")
+        # Uploaded images live in a dedicated subdir of the data dir. This is the
+        # ONLY part of the data dir ever served over HTTP (via GET /uploads/…);
+        # the rest (sessions.json, content.json) stays unreachable.
+        self.uploads_dir = os.path.join(self.data_dir, "uploads")
 
         # Warn loudly if the data dir lives under the served site root: the
         # static handler already refuses to serve it, but keeping sessions out
@@ -221,6 +238,23 @@ class App:
         with self._lock:
             _atomic_write_json(self.content_path, obj)
 
+    # --- uploads store ------------------------------------------------------
+
+    def save_upload(self, name, ext, data):
+        """Write `data` to <data>/uploads/<name><ext> atomically and return the
+        public URL path (/uploads/<name><ext>). `name` is caller-generated and
+        unguessable; `ext` comes from the validated content-type map."""
+        os.makedirs(self.uploads_dir, exist_ok=True)
+        filename = name + ext
+        path = os.path.join(self.uploads_dir, filename)
+        tmp = path + f".{os.getpid()}.tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        return "/uploads/" + filename
+
 
 def _atomic_write_json(path, obj):
     """Write JSON to `path` atomically (temp file in the same dir + os.replace)."""
@@ -303,17 +337,18 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- request-body / security helpers ------------------------------------
 
-    def _read_body(self):
-        """Read the request body, enforcing the size cap.
+    def _read_body(self, max_bytes=MAX_BODY):
+        """Read the request body, enforcing a size cap.
 
         Returns (ok, bytes). When the body is too large, sends 413 and returns
-        (False, b"").
+        (False, b""). `max_bytes` defaults to the JSON cap; the upload route
+        passes the larger image cap.
         """
         try:
             length = int(self.headers.get("Content-Length", 0))
         except (TypeError, ValueError):
             length = 0
-        if length > MAX_BODY:
+        if length > max_bytes:
             # We refuse to drain a huge body; close the connection instead so
             # the unread bytes don't desync the next request under keep-alive.
             self.close_connection = True
@@ -359,6 +394,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._api_get_content()
         if path.startswith("/api/"):
             return self._finish(HTTPStatus.NOT_FOUND, self._json, {"error": "not found"})
+        # Uploaded images are public and served from the data dir's uploads/
+        # subdir (NOT the site root). Kept above _static so the site handler
+        # never sees these paths.
+        if path.startswith("/uploads/"):
+            return self._serve_upload(path)
         # The admin console is a static shell (admin.html). It is NOT gated
         # server-side: the page gates its own UI client-side and the content
         # API stays auth-protected. Both /admin and /admin/ serve the same file.
@@ -371,6 +411,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path.startswith("/api/"):
             return self._finish(HTTPStatus.NOT_FOUND, self._json, {"error": "not found"})
+        if path.startswith("/uploads/"):
+            return self._serve_upload(path)
         return self._static(path)
 
     def do_POST(self):
@@ -379,6 +421,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._api_auth_google()
         if path == "/api/auth/logout":
             return self._api_auth_logout()
+        if path == "/api/uploads":
+            return self._api_upload()
         return self._finish(HTTPStatus.NOT_FOUND, self._json, {"error": "not found"})
 
     def do_PUT(self):
@@ -443,6 +487,45 @@ class Handler(BaseHTTPRequestHandler):
             return self._finish(HTTPStatus.NOT_FOUND, self._send,
                                 "404 Not Found", "text/plain; charset=utf-8")
         self._send(HTTPStatus.OK, data, ctype)
+        self._log(HTTPStatus.OK)
+
+    # -- uploads: serve (public) --------------------------------------------
+
+    def _serve_upload(self, url_path):
+        """Serve a single file from <data>/uploads/. PUBLIC (uploaded page/blog
+        images are meant to be public), but strictly confined to the uploads
+        subdir: no subpaths, no dotfiles, and a realpath containment check so a
+        crafted `/uploads/../…` can never escape into the rest of the data dir.
+        """
+        def not_found():
+            return self._finish(HTTPStatus.NOT_FOUND, self._send,
+                                "404 Not Found", "text/plain; charset=utf-8")
+
+        rel = urllib.parse.unquote(url_path[len("/uploads/"):])
+        # A single flat filename only: reject empties, dotfiles, and anything
+        # with a path separator (which is what `../` traversal would carry).
+        if not rel or "/" in rel or "\\" in rel or rel.startswith("."):
+            return not_found()
+
+        uploads_root = os.path.realpath(self.app.uploads_dir)
+        target = os.path.realpath(os.path.join(uploads_root, rel))
+        # Containment: the resolved path must stay strictly inside uploads/.
+        if not target.startswith(uploads_root + os.sep):
+            return not_found()
+        if not os.path.isfile(target):
+            return not_found()
+
+        ext = os.path.splitext(target)[1].lower()
+        ctype = UPLOAD_EXT_MIME.get(ext) or MIME_TYPES.get(ext, "application/octet-stream")
+        try:
+            with open(target, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            return not_found()
+        # Uploaded assets are immutable (unguessable names, never overwritten),
+        # so they can be cached hard.
+        self._send(HTTPStatus.OK, data, ctype,
+                   {"Cache-Control": "public, max-age=31536000, immutable"})
         self._log(HTTPStatus.OK)
 
     # -- API: auth ----------------------------------------------------------
@@ -526,6 +609,38 @@ class Handler(BaseHTTPRequestHandler):
                                 {"error": "content must be an object"})
         self.app.write_content(obj)
         return self._finish(HTTPStatus.OK, self._json, {"ok": True})
+
+    # -- API: uploads (auth'd write) ----------------------------------------
+
+    def _api_upload(self):
+        """Accept a RAW image body (not multipart — cgi is gone in 3.13) and
+        store it under an unguessable name. Requires a valid session and a
+        same-origin request, mirroring the content-write protections.
+        """
+        if not self._session():
+            return self._finish(HTTPStatus.UNAUTHORIZED, self._json,
+                                {"error": "unauthorized"})
+        if not self._origin_ok():
+            return self._finish(HTTPStatus.FORBIDDEN, self._json, {"error": "bad origin"})
+        # Validate the declared type BEFORE reading the body. On rejection we do
+        # not drain the (possibly large) body, so close the connection to avoid
+        # desyncing the next keep-alive request.
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        ext = UPLOAD_MIME_EXT.get(ctype)
+        if not ext:
+            self.close_connection = True
+            return self._finish(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, self._json,
+                                {"error": "unsupported content-type"},
+                                {"Connection": "close"})
+        ok, raw = self._read_body(MAX_UPLOAD)
+        if not ok:
+            self._log(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+        if not raw:
+            return self._finish(HTTPStatus.BAD_REQUEST, self._json,
+                                {"error": "empty body"})
+        url = self.app.save_upload(secrets.token_urlsafe(16), ext, raw)
+        return self._finish(HTTPStatus.OK, self._json, {"url": url})
 
 
 # --- Server plumbing ---------------------------------------------------------
@@ -781,6 +896,74 @@ def selftest():
         check("12. GET /admin (and /admin/) serve admin.html as HTML -> 200",
               a_status == 200 and s_status == 200
               and "text/html" in a_ctype and b"admin-ok" in a_body)
+
+        # --- uploads ------------------------------------------------------
+        # A minimal but valid 1x1 PNG. The server validates the declared
+        # Content-Type, not the bytes, but a real image keeps the test honest.
+        png = bytes.fromhex(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+            "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+        )
+
+        def raw_request(method, path, body=None, content_type=None,
+                        cookie=None, origin=None):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            headers = {}
+            if content_type:
+                headers["Content-Type"] = content_type
+            if cookie:
+                headers["Cookie"] = f"{COOKIE_NAME}={cookie}"
+            if origin:
+                headers["Origin"] = origin
+            conn.request(method, path, body=body, headers=headers)
+            resp = conn.getresponse()
+            raw = resp.read()
+            status = resp.status
+            resp_ctype = resp.getheader("Content-Type")
+            conn.close()
+            return status, raw, resp_ctype
+
+        # Fresh session (the earlier `sid` was invalidated by the logout in 7).
+        _, _, up_cookie = request(
+            "POST", "/api/auth/google", body={"credential": good_credential},
+            origin=origin)
+        up_sid = cookie_from(up_cookie)
+
+        # 13. Upload without a session -> 401.
+        s13, _, _ = raw_request("POST", "/api/uploads", body=png,
+                                content_type="image/png", origin=origin)
+        check("13. POST /api/uploads without session -> 401", s13 == 401)
+
+        # 14. Upload with a disallowed content-type -> 415.
+        s14, _, _ = raw_request("POST", "/api/uploads", body=b"nope",
+                                content_type="text/plain", cookie=up_sid,
+                                origin=origin)
+        check("14. POST /api/uploads with disallowed content-type -> 415",
+              s14 == 415)
+
+        # 15. Successful upload -> 200 + /uploads/ url; then the file is
+        #     retrievable (publicly, no cookie) with the right content-type.
+        s15, body15, _ = raw_request("POST", "/api/uploads", body=png,
+                                     content_type="image/png", cookie=up_sid,
+                                     origin=origin)
+        up_url = None
+        try:
+            up_url = json.loads(body15).get("url")
+        except (ValueError, AttributeError):
+            up_url = None
+        upload_ok = (s15 == 200 and isinstance(up_url, str)
+                     and up_url.startswith("/uploads/"))
+        get_status, get_body, get_ctype = (
+            raw_request("GET", up_url) if upload_ok else (None, None, None))
+        check("15. POST /api/uploads (valid) -> url, then GET serves the image",
+              upload_ok and get_status == 200 and get_ctype == "image/png"
+              and get_body == png)
+
+        # 16. Path traversal out of uploads/ is blocked. Point at the sessions
+        #     store, which really exists one level up in the data dir.
+        s16, _, _ = raw_request("GET", "/uploads/../sessions.json")
+        check("16. GET /uploads/../sessions.json (traversal) -> 404",
+              s16 == 404)
 
     finally:
         httpd.shutdown()

@@ -137,6 +137,19 @@ function renderExperience(block) {
   return grid;
 }
 
+function renderImage(block) {
+  // Empty src -> render nothing (the block exists in the doc but has no image
+  // chosen yet). Never throw on a half-filled block.
+  if (!block.src) return null;
+  const wrap = el("div", "block block--image fade-in");
+  const img = el("img", "image-block__img");
+  img.src = block.src;
+  img.alt = block.alt || "";
+  img.loading = "lazy";
+  wrap.appendChild(img);
+  return wrap;
+}
+
 function renderSocials(block) {
   const wrap = el("div", "contact__socials block block--socials fade-in");
   (block.items || []).forEach((s) => {
@@ -159,6 +172,7 @@ const RENDERERS = {
   projects: renderProjects,
   experience: renderExperience,
   socials: renderSocials,
+  image: renderImage,
 };
 
 // Render a whole block document into #content, replacing whatever was there.
