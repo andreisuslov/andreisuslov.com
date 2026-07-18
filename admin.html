@@ -9,6 +9,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Quill 2.0.3 rich-text editor, vendored locally (no runtime CDN). Loaded
+       ONLY on /admin — the public page never pulls Quill. -->
+  <link rel="stylesheet" href="vendor/quill/quill.snow.css?v=20260718a">
   <link rel="stylesheet" href="admin.css?v=20260718a">
 </head>
 <body>
@@ -18,6 +21,7 @@
   <div id="admin-root"></div>
 
   <script src="content-default.js?v=20260718a"></script>
+  <script src="vendor/quill/quill.min.js?v=20260718a"></script>
   <script src="admin.js?v=20260718a"></script>
 </body>
 </html>
