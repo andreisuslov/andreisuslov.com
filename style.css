@@ -133,18 +133,65 @@ section {
   letter-spacing: -0.01em;
 }
 
-/* ===== HERO ===== */
-.hero {
+/* ===== BLOCK DOCUMENT ===== */
+/* The homepage is a flat list of blocks rendered into #content. Vertical
+   rhythm is driven by each block's top margin so the admin can reorder blocks
+   freely; level-2 headings open a new section with generous space above. */
+#content {
   position: relative;
   padding-top: var(--space-4xl);
-  padding-bottom: var(--space-3xl);
+  padding-bottom: var(--space-4xl);
 }
 
-/* Face sits in the left gutter so the heading and text keep full content width */
-.hero__media {
+.block {
+  margin: var(--space-lg) 0 0;
+}
+
+.block--portrait {
+  margin: 0;
+}
+
+.block--heading-1 {
+  margin-top: 0;
+}
+
+.block--heading-2 {
+  margin-top: var(--space-4xl);
+}
+
+.block--list {
+  margin-top: var(--space-md);
+}
+
+.block--grid {
+  margin-top: var(--space-xl);
+}
+
+/* Prose block — muted, larger body text (reuses the old hero/about look). */
+.richtext {
+  font-size: var(--font-size-lg);
+  color: var(--color-text-muted);
+  line-height: 1.75;
+}
+
+.richtext p {
+  margin-bottom: var(--space-md);
+}
+
+.richtext p:last-child {
+  margin-bottom: 0;
+}
+
+/* ===== PORTRAIT (hero face in the left gutter) ===== */
+/* Placement is driven by the block's fields via custom properties:
+   --portrait-width and --portrait-offset (px the face sits left of the
+   content column). Responsive breakpoints below can still override width. */
+.portrait,
+.block--portrait {
   position: absolute;
   top: var(--space-4xl);
-  left: calc(-1 * (180px + var(--space-xl)));
+  left: calc(-1 * var(--portrait-offset, 212px));
+  width: var(--portrait-width, 180px);
 }
 
 .hero__heading {
@@ -166,7 +213,7 @@ section {
    sampling the portrait's alpha channel under the cursor. */
 .face-swap {
   position: relative;
-  width: 180px;
+  width: 100%;
   aspect-ratio: 724 / 1086;
 }
 
@@ -430,270 +477,18 @@ section {
     grid-template-columns: 1fr;
   }
 
-  .face-swap {
+  .block--portrait {
     width: 150px;
   }
 }
 
 /* ===== RESPONSIVE — NOT ENOUGH GUTTER FOR THE FACE ===== */
 @media (max-width: 1180px) {
-  .hero__media {
+  .block--portrait {
     position: static;
+    left: auto;
     margin-bottom: var(--space-xl);
   }
-}
-
-/* ===== EDITOR SHELL (only rendered when the dev gate is active) ===== */
-/* All editor styling is scoped to .editor-toolbar and body.editing so it can
-   never affect the public render. */
-.editor-toolbar {
-  position: fixed;
-  right: var(--space-lg);
-  bottom: var(--space-lg);
-  z-index: 1000;
-  display: flex;
-  gap: var(--space-sm);
-  padding: var(--space-sm);
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  background: var(--color-bg);
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
-}
-
-.editor-toolbar__btn {
-  font-family: var(--font-family);
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-  padding: var(--space-xs) var(--space-md);
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  background: var(--color-bg);
-  color: var(--color-text);
-  cursor: pointer;
-  transition:
-    background-color var(--transition-fast),
-    border-color var(--transition-fast),
-    opacity var(--transition-fast);
-}
-
-.editor-toolbar__btn:hover:not(:disabled) {
-  background: var(--color-card-bg);
-  border-color: var(--color-text);
-}
-
-.editor-toolbar__btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.editor-toolbar__btn--edit[aria-pressed="true"] {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
-  color: #ffffff;
-}
-
-/* ===== OWNER SIGN-IN PANEL (only injected for the owner via #edit) ===== */
-/* Never present for ordinary visitors; the GIS script is loaded lazily and the
-   panel only appears when the owner explicitly enters at #edit. */
-.editor-signin {
-  position: fixed;
-  right: var(--space-lg);
-  bottom: var(--space-lg);
-  z-index: 1000;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-  padding: var(--space-md);
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  background: var(--color-bg);
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
-}
-
-.editor-signin__label {
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  color: var(--color-text);
-}
-
-.editor-signin__msg {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-}
-
-.editor-signin__msg:empty {
-  display: none;
-}
-
-/* ===== EDITOR TOAST (save feedback; scoped, transient) ===== */
-.editor-toast {
-  position: fixed;
-  left: 50%;
-  bottom: var(--space-lg);
-  transform: translateX(-50%) translateY(1rem);
-  z-index: 1100;
-  padding: var(--space-sm) var(--space-lg);
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-text);
-  color: var(--color-bg);
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--transition-base), transform var(--transition-base);
-}
-
-.editor-toast--show {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-}
-
-.editor-toast--error {
-  background: #b91c1c;
-  border-color: #b91c1c;
-  color: #ffffff;
-}
-
-/* ===== INLINE TEXT EDITING (only when body.editing is active) ===== */
-/* Affordances are scoped under body.editing so the public render is untouched. */
-body.editing [data-edit] {
-  cursor: text;
-  outline: 1px dashed var(--color-border);
-  outline-offset: 3px;
-  border-radius: 3px;
-  transition: outline-color var(--transition-fast),
-    background-color var(--transition-fast);
-}
-
-body.editing [data-edit]:hover {
-  outline-color: var(--color-accent);
-  background-color: var(--color-card-hover);
-}
-
-body.editing [data-edit]:focus {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 3px;
-  background-color: var(--color-card-bg);
-}
-
-/* ===== STRUCTURAL BLOCK CONTROLS (Task 4, only when body.editing) ===== */
-/* Editor chrome for add/delete/reorder. Injected only in edit mode and removed
-   on teardown, so it can never reach the public render. */
-body.editing .project-card,
-body.editing .about__list li,
-body.editing .contact__social-link {
-  position: relative;
-}
-
-.editor-block-controls {
-  display: none;
-}
-
-body.editing .editor-block-controls {
-  display: inline-flex;
-  gap: 2px;
-  z-index: 5;
-}
-
-.editor-block-controls--card {
-  position: absolute;
-  top: var(--space-sm);
-  right: var(--space-sm);
-}
-
-.editor-block-controls--list {
-  position: absolute;
-  top: 0;
-  right: 0;
-}
-
-/* Reserve space so list text doesn't run under the controls. */
-body.editing .about__list li {
-  padding-right: 5rem;
-}
-
-.editor-block-controls--social {
-  position: absolute;
-  top: calc(100% + var(--space-xs));
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-.editor-block-controls__btn {
-  font-family: var(--font-family);
-  font-size: var(--font-size-xs);
-  line-height: 1;
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 1px solid var(--color-border);
-  border-radius: 5px;
-  background: var(--color-bg);
-  color: var(--color-text-muted);
-  cursor: pointer;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  transition:
-    color var(--transition-fast),
-    border-color var(--transition-fast),
-    background-color var(--transition-fast),
-    opacity var(--transition-fast);
-}
-
-.editor-block-controls__btn:hover:not(:disabled) {
-  color: var(--color-text);
-  border-color: var(--color-text);
-  background: var(--color-card-bg);
-}
-
-.editor-block-controls__btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-
-.editor-block-controls__del:hover:not(:disabled) {
-  color: #b91c1c;
-  border-color: #b91c1c;
-}
-
-/* Give the socials row room for the controls that sit below each icon. */
-body.editing .contact__socials {
-  margin-bottom: var(--space-3xl);
-}
-
-.editor-add {
-  display: none;
-}
-
-body.editing .editor-add {
-  display: block;
-  margin-top: var(--space-md);
-}
-
-.editor-add__btn {
-  font-family: var(--font-family);
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-  padding: var(--space-xs) var(--space-md);
-  border: 1px dashed var(--color-border);
-  border-radius: 8px;
-  background: var(--color-bg);
-  color: var(--color-text-muted);
-  cursor: pointer;
-  transition:
-    color var(--transition-fast),
-    border-color var(--transition-fast),
-    background-color var(--transition-fast);
-}
-
-.editor-add__btn:hover {
-  color: var(--color-accent);
-  border-color: var(--color-accent);
-  background: var(--color-card-bg);
 }
 
 /* ===== RESPONSIVE — MOBILE ===== */

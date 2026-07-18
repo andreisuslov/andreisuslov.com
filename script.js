@@ -1,3 +1,8 @@
+// Public block renderer. The homepage is a read-only document of blocks
+// (see content-default.js for the shape). This file renders the blocks into
+// #content and wires the scroll reveal + face-swap hover. It never mutates the
+// content — editing happens only through the admin console (built separately).
+
 // SVG icon paths (safe static content)
 const ICON_PATHS = {
   github:
@@ -20,263 +25,182 @@ function createSvgIcon(iconName) {
   return svg;
 }
 
-function buildRichContent(segments, parent) {
-  segments.forEach((seg) => {
-    if (seg.type === "text") {
-      parent.appendChild(document.createTextNode(seg.value));
-    } else if (seg.type === "link") {
-      const a = document.createElement("a");
-      a.href = seg.url;
-      a.target = "_blank";
-      a.rel = "noopener";
-      a.textContent = seg.text;
-      parent.appendChild(a);
-    }
-  });
+// Small DOM helper: element with an optional className.
+function el(tag, className) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  return node;
 }
 
-// --- Render functions ---
+// --- Block renderers -------------------------------------------------------
+// Each returns a single DOM node for one block. Every block carries `.block`
+// (spacing rhythm), a `.block--<type>` modifier, and `.fade-in` (scroll reveal).
 
-function renderMeta(meta) {
-  document.title = meta.title;
-  document
-    .querySelector('meta[name="description"]')
-    .setAttribute("content", meta.description);
+function renderPortrait(block) {
+  const wrap = el("div", "block block--portrait fade-in");
+  // width / offsetX drive the gutter placement via CSS custom properties, so
+  // the responsive breakpoints in style.css can still override the width.
+  wrap.style.setProperty("--portrait-width", (block.width || 180) + "px");
+  wrap.style.setProperty("--portrait-offset", (block.offsetX || 212) + "px");
+
+  const swap = el("div", "face-swap");
+  swap.setAttribute("role", "img");
+  swap.setAttribute("aria-label", "Photo of Andrei Suslov");
+  swap.innerHTML =
+    '<svg class="face-swap__face face-swap__face--default" viewBox="0 0 724 1086" xmlns="http://www.w3.org/2000/svg">' +
+    '<image width="724" height="1086" href="face-serious.webp?v=20260717c"></image></svg>' +
+    '<svg class="face-swap__face face-swap__face--hover" viewBox="0 0 724 1086" xmlns="http://www.w3.org/2000/svg">' +
+    '<image width="724" height="1086" href="face-happy.webp?v=20260717c"></image></svg>';
+  wrap.appendChild(swap);
+  return wrap;
 }
 
-function renderNav(nav) {
-  const el = document.getElementById("nav-logo");
-  el.textContent = nav.name;
-  el.href = nav.href;
-  el.setAttribute("data-edit", "nav.name");
+function renderHeading(block) {
+  const level = block.level === 1 ? 1 : 2;
+  const heading = el(
+    "h" + level,
+    (level === 1 ? "hero__heading" : "section-heading") +
+      " block block--heading-" + level + " fade-in"
+  );
+  heading.textContent = block.text || "";
+  return heading;
 }
 
-function renderHero(hero) {
-  const heading = document.getElementById("hero-heading");
-  heading.textContent = hero.heading;
-  heading.setAttribute("data-edit", "hero.heading");
-
-  const text = document.getElementById("hero-text");
-  text.textContent = hero.text;
-  text.setAttribute("data-edit", "hero.text");
+function renderRichtext(block) {
+  const node = el("div", "richtext block block--richtext fade-in");
+  // Owner-authored HTML (default doc or the server's content.json). This is
+  // where the admin's WYSIWYG output lands later.
+  node.innerHTML = block.html || "";
+  return node;
 }
 
-function renderAbout(about) {
-  const textEl = document.getElementById("about-text");
-  textEl.replaceChildren();
-  buildRichContent(about.summary, textEl);
-  // #about-text maps to the FULL about.summary. Editing collapses the rich
-  // summary array to a single { type:"text" } segment (see editor.js). That is
-  // acceptable here because the summary currently has no link segments.
-  textEl.setAttribute("data-edit", "about.summary");
-
-  const list = document.getElementById("about-list");
-  list.replaceChildren();
-  about.learning.forEach((item, i) => {
+function renderList(block) {
+  const list = el("ul", "about__list block block--list fade-in");
+  (block.items || []).forEach((item) => {
     const li = document.createElement("li");
-    // The editable text lives on an inner span so the editor can append its
-    // control cluster to the <li> (a sibling of the span) without those buttons
-    // becoming part of the contenteditable element's textContent.
-    const span = document.createElement("span");
-    span.textContent = item;
-    span.setAttribute("data-edit", "about.learning." + i);
-    li.appendChild(span);
+    li.textContent = item;
     list.appendChild(li);
   });
+  return list;
 }
 
-function renderProjectCards(items, gridId, basePath) {
-  const grid = document.getElementById(gridId);
-  grid.replaceChildren();
-
-  items.forEach((p, i) => {
-    let card;
-    if (p.github) {
-      card = document.createElement("a");
-      card.href = p.github;
-      card.target = "_blank";
-      card.rel = "noopener";
-    } else {
-      card = document.createElement("div");
-    }
-    card.className = "project-card";
-
-    const name = document.createElement("h3");
-    name.className = "project-card__name";
-    name.textContent = p.name;
-    name.setAttribute("data-edit", basePath + "." + i + ".name");
-    card.appendChild(name);
-
-    if (p.course) {
-      const course = document.createElement("span");
-      course.className = "project-card__course";
-      course.textContent = p.course;
-      course.setAttribute("data-edit", basePath + "." + i + ".course");
-      card.appendChild(course);
-    }
-
-    const desc = document.createElement("p");
-    desc.className = "project-card__desc";
-    desc.textContent = p.description;
-    desc.setAttribute("data-edit", basePath + "." + i + ".description");
-    card.appendChild(desc);
-
-    const footer = document.createElement("div");
-    footer.className = "project-card__footer";
-
-    const tags = document.createElement("div");
-    tags.className = "project-card__tags";
-    p.tags.forEach((t) => {
-      const span = document.createElement("span");
-      span.className = "tag";
-      span.textContent = t;
-      tags.appendChild(span);
-    });
-    footer.appendChild(tags);
-
-    if (p.live) {
-      const liveLink = document.createElement("a");
-      liveLink.href = p.live;
-      liveLink.target = "_blank";
-      liveLink.rel = "noopener";
-      liveLink.className = "project-card__live";
-      liveLink.textContent = "Live";
-      liveLink.addEventListener("click", (e) => e.stopPropagation());
-      footer.appendChild(liveLink);
-    }
-
-    card.appendChild(footer);
-    grid.appendChild(card);
-  });
-}
-
-function renderPersonalProjects(data) {
-  const heading = document.getElementById("personal-projects-heading");
-  heading.textContent = data.heading;
-  heading.setAttribute("data-edit", "personalProjects.heading");
-  renderProjectCards(data.items, "personal-projects-grid", "personalProjects.items");
-}
-
-function renderCourseProjects(data) {
-  const heading = document.getElementById("course-projects-heading");
-  heading.textContent = data.heading;
-  heading.setAttribute("data-edit", "courseProjects.heading");
-  renderProjectCards(data.items, "course-projects-grid", "courseProjects.items");
-}
-
-function renderPublications(publications) {
-  const pubHeading = document.getElementById("publications-heading");
-  pubHeading.textContent = publications.heading;
-  pubHeading.setAttribute("data-edit", "publications.heading");
-  const list = document.getElementById("publications-list");
-  list.replaceChildren();
-
-  publications.items.forEach((pub) => {
-    const card = document.createElement("a");
-    card.href = pub.doi;
+// Build one project/experience card. `withCourse` adds the role/date line used
+// by the experience grid.
+function buildCard(item, withCourse) {
+  let card;
+  if (item.github) {
+    card = el("a");
+    card.href = item.github;
     card.target = "_blank";
     card.rel = "noopener";
-    card.className = "publication-card";
+  } else {
+    card = el("div");
+  }
+  card.className = "project-card";
 
-    const title = document.createElement("h3");
-    title.className = "publication-card__title";
-    title.textContent = pub.title;
-    card.appendChild(title);
+  const name = el("h3", "project-card__name");
+  name.textContent = item.name;
+  card.appendChild(name);
 
-    const authors = document.createElement("p");
-    authors.className = "publication-card__authors";
-    authors.textContent = pub.authors;
-    card.appendChild(authors);
-
-    const venue = document.createElement("p");
-    venue.className = "publication-card__venue";
-    venue.textContent = pub.venue;
-    card.appendChild(venue);
-
-    const meta = document.createElement("div");
-    meta.className = "publication-card__meta";
-
-    const year = document.createElement("span");
-    year.className = "tag";
-    year.textContent = pub.year;
-    meta.appendChild(year);
-
-    if (pub.location) {
-      const loc = document.createElement("span");
-      loc.className = "publication-card__location";
-      loc.textContent = pub.location;
-      meta.appendChild(loc);
-    }
-
-    if (pub.pages) {
-      const pages = document.createElement("span");
-      pages.className = "publication-card__location";
-      pages.textContent = "pp. " + pub.pages;
-      meta.appendChild(pages);
-    }
-
-    if (pub.volume) {
-      const vol = document.createElement("span");
-      vol.className = "publication-card__location";
-      vol.textContent = "Vol. " + pub.volume;
-      meta.appendChild(vol);
-    }
-
-    card.appendChild(meta);
-    list.appendChild(card);
-  });
-}
-
-function renderContact(contact) {
-  const heading = document.getElementById("contact-heading");
-  heading.textContent = contact.heading;
-  heading.setAttribute("data-edit", "contact.heading");
-
-  const text = document.getElementById("contact-text");
-  text.textContent = contact.text;
-  text.setAttribute("data-edit", "contact.text");
-
-  if (contact.location) {
-    const location = document.getElementById("contact-location");
-    location.textContent = contact.location;
-    location.setAttribute("data-edit", "contact.location");
+  if (withCourse && item.course) {
+    const course = el("span", "project-card__course");
+    course.textContent = item.course;
+    card.appendChild(course);
   }
 
-  const socials = document.getElementById("contact-socials");
-  socials.replaceChildren();
-  contact.socials.forEach((s) => {
-    const a = document.createElement("a");
+  const desc = el("p", "project-card__desc");
+  desc.textContent = item.description;
+  card.appendChild(desc);
+
+  const footer = el("div", "project-card__footer");
+  const tags = el("div", "project-card__tags");
+  (item.tags || []).forEach((t) => {
+    const span = el("span", "tag");
+    span.textContent = t;
+    tags.appendChild(span);
+  });
+  footer.appendChild(tags);
+  card.appendChild(footer);
+
+  return card;
+}
+
+function renderProjects(block) {
+  const grid = el("div", "projects__grid block block--grid fade-in");
+  (block.items || []).forEach((item) => grid.appendChild(buildCard(item, false)));
+  return grid;
+}
+
+function renderExperience(block) {
+  const grid = el("div", "projects__grid block block--grid fade-in");
+  (block.items || []).forEach((item) => grid.appendChild(buildCard(item, true)));
+  return grid;
+}
+
+function renderSocials(block) {
+  const wrap = el("div", "contact__socials block block--socials fade-in");
+  (block.items || []).forEach((s) => {
+    const a = el("a", "contact__social-link");
     a.href = s.url;
     a.target = "_blank";
     a.rel = "noopener";
-    a.className = "contact__social-link";
     a.setAttribute("aria-label", s.name);
     a.appendChild(createSvgIcon(s.icon));
-    socials.appendChild(a);
+    wrap.appendChild(a);
+  });
+  return wrap;
+}
+
+const RENDERERS = {
+  portrait: renderPortrait,
+  heading: renderHeading,
+  richtext: renderRichtext,
+  list: renderList,
+  projects: renderProjects,
+  experience: renderExperience,
+  socials: renderSocials,
+};
+
+// Render a whole block document into #content, replacing whatever was there.
+function renderBlocks(content) {
+  const root = document.getElementById("content");
+  if (!root) return;
+  root.replaceChildren();
+  const blocks = content && Array.isArray(content.blocks) ? content.blocks : [];
+  blocks.forEach((block) => {
+    const fn = RENDERERS[block && block.type];
+    if (!fn) return; // unknown block types are skipped, never fatal
+    const node = fn(block);
+    if (!node) return;
+    if (block.id) node.dataset.blockId = block.id;
+    root.appendChild(node);
   });
 }
 
-// --- Scroll effects ---
+// --- Scroll reveal ---------------------------------------------------------
 
+// Reveal any not-yet-visible fade-in blocks currently in (or near) the viewport.
+function revealVisible() {
+  document.querySelectorAll(".fade-in:not(.visible)").forEach((elm) => {
+    if (elm.getBoundingClientRect().top < window.innerHeight * 0.9) {
+      elm.classList.add("visible");
+    }
+  });
+}
+
+// Attach the scroll/resize listeners once. They read the DOM at event time, so
+// blocks added by a later re-render are picked up automatically.
 function initScrollEffects() {
   const nav = document.querySelector(".nav");
   window.addEventListener("scroll", () => {
     nav.classList.toggle("scrolled", window.scrollY > 10);
   });
-
-  const reveal = () => {
-    document.querySelectorAll(".fade-in:not(.visible)").forEach((el) => {
-      if (el.getBoundingClientRect().top < window.innerHeight * 0.9) {
-        el.classList.add("visible");
-      }
-    });
-  };
-  window.addEventListener("scroll", reveal, { passive: true });
-  window.addEventListener("resize", reveal, { passive: true });
-  reveal();
+  window.addEventListener("scroll", revealVisible, { passive: true });
+  window.addEventListener("resize", revealVisible, { passive: true });
+  revealVisible();
 }
 
-// --- Face-swap hover (only react over the face's opaque pixels) ---
+// --- Face-swap hover (only react over the face's opaque pixels) ------------
 
 function initFaceHover() {
   const swap = document.querySelector(".face-swap");
@@ -314,51 +238,28 @@ function initFaceHover() {
   });
 }
 
-// --- Init (DATA is loaded from data.js) ---
+// --- Init ------------------------------------------------------------------
+// Render the embedded default immediately (no blank flash), then ask the server
+// for the authoritative document. If /api/content returns a {blocks:[...]}
+// object we re-render from it; on 404 or any error the default stands, so the
+// static file still works standalone.
 
-// Mutable working copy of the content. Re-render at any time via renderAll(state).
-const state = structuredClone(DATA);
-
-function renderAll(state) {
-  renderMeta(state.meta);
-  renderNav(state.nav);
-  renderHero(state.hero);
-  renderAbout(state.about);
-  renderPersonalProjects(state.personalProjects);
-  renderCourseProjects(state.courseProjects);
-  const publicationsSection = document.querySelector(".publications");
-  if (state.publications) {
-    publicationsSection?.removeAttribute("hidden");
-    renderPublications(state.publications);
-  } else {
-    publicationsSection?.setAttribute("hidden", "");
-  }
-  renderContact(state.contact);
+function render(content) {
+  renderBlocks(content);
+  revealVisible();
+  initFaceHover();
 }
 
-// Render immediately from the embedded DATA so there is never a blank flash,
-// then ask the server for the authoritative content. If content.json exists
-// (200 + object) we replace `state` and re-render; on 404 or any error we keep
-// the DATA-based render, so the static file still works standalone.
-renderAll(state);
+render(DEFAULT_CONTENT);
 initScrollEffects();
-initFaceHover();
 
 fetch("/api/content", { credentials: "same-origin" })
   .then((res) => (res.ok ? res.json() : null))
   .then((content) => {
-    if (content && typeof content === "object" && !Array.isArray(content)) {
-      // Never clobber an in-progress edit: if the owner is already editing,
-      // skip the upgrade (the fetch resolves at load, before a human could log
-      // in and type, but guard it defensively as more async lands in B5–B7).
-      if (document.body.classList.contains("editing")) return;
-      // Replace the working copy in place so editor.js keeps its `state`
-      // reference (it reads the outer global by name).
-      for (const key of Object.keys(state)) delete state[key];
-      Object.assign(state, content);
-      renderAll(state);
+    if (content && typeof content === "object" && Array.isArray(content.blocks)) {
+      render(content);
     }
   })
   .catch(() => {
-    // Offline / server down / bad JSON: the DATA-based render already stands.
+    // Offline / server down / bad JSON: the default render already stands.
   });
