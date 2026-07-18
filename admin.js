@@ -32,6 +32,11 @@
   let saveStatusEl = null;
   let blocksContainer = null;
 
+  // Set only when a Save is rejected by a 401: the in-memory (still unsaved)
+  // document, stashed across the forced re-sign-in so re-auth restores the
+  // user's edits instead of reloading server/default content over them.
+  let pendingUnsavedDoc = null;
+
   // Monotonic id sequence for freshly added blocks (no Math.random needed).
   let blockIdSeq = 0;
 
@@ -151,8 +156,17 @@
           return;
         }
         if (res.status === 401) {
-          toast("Please sign in again", "error");
-          renderSignIn("Your session expired. Please sign in again.");
+          // Session expired mid-save. The edits are NOT persisted — never drop
+          // them: stash the working doc, bounce to sign-in with a persistent
+          // warning, and keep `dirty` true so beforeunload still guards. On
+          // re-auth, renderDashboard restores this doc instead of reloading.
+          pendingUnsavedDoc = doc;
+          toast("Not saved — your session expired.", "error");
+          renderSignIn(
+            "Your session expired and your changes were NOT saved. " +
+              "Sign in again, then click Save."
+          );
+          dirty = true; // renderSignIn cleared it; restore so we still warn
           return;
         }
         toast("Save failed (" + res.status + ")", "error");
@@ -230,14 +244,16 @@
   // so inputs/toolbars stay interactive and text stays selectable).
 
   let dragFrom = null;
+  let armedCard = null; // card whose handle was pressed (draggable armed)
 
   function attachDrag(card, handle, index) {
     handle.addEventListener("mousedown", () => {
+      armedCard = card;
       card.draggable = true;
     });
-    handle.addEventListener("mouseup", () => {
-      card.draggable = false;
-    });
+    // NB: a press-on-handle then release-over-the-body starts no drag, so
+    // neither dragend nor a handle mouseup fires — the document-level mouseup
+    // (registered once, below) disarms it so no card is left stuck draggable.
     card.addEventListener("dragstart", (e) => {
       dragFrom = index;
       card.classList.add("is-dragging");
@@ -255,6 +271,7 @@
       card.classList.remove("is-dragging");
       card.classList.remove("is-drop-target");
       dragFrom = null;
+      armedCard = null;
     });
     card.addEventListener("dragover", (e) => {
       e.preventDefault();
@@ -579,6 +596,10 @@
     const myScreen = ++screenGen;
     dirty = false;
     saving = false;
+    // Reset so the brief "Loading…" state reflects THIS session, not carryover
+    // from a previous one. (Restored below if we have unsaved edits to recover.)
+    doc = null;
+    loadError = false;
     clearRoot();
 
     const shell = el("div", "admin-shell");
@@ -618,6 +639,20 @@
     root.appendChild(shell);
 
     updateSaveBar();
+
+    // Recovering from a mid-save 401: the user just re-authenticated and we have
+    // their unsaved edits stashed. Restore them verbatim (do NOT reload server
+    // content over the top) so they can retry Save, and keep the doc dirty.
+    if (pendingUnsavedDoc) {
+      doc = pendingUnsavedDoc;
+      pendingUnsavedDoc = null;
+      loadError = false;
+      dirty = true;
+      renderEditor(list);
+      updateSaveBar();
+      toast("Signed back in — your unsaved edits are here. Click Save.", "success");
+      return;
+    }
 
     loadContent().then((result) => {
       if (myScreen !== screenGen) return; // signed out / navigated before load
@@ -827,6 +862,15 @@
     if (dirty) {
       e.preventDefault();
       e.returnValue = "";
+    }
+  });
+
+  // Disarm a handle-armed card on any mouse release (covers the case where a
+  // drag never started, which fires no dragend).
+  document.addEventListener("mouseup", () => {
+    if (armedCard) {
+      armedCard.draggable = false;
+      armedCard = null;
     }
   });
 
