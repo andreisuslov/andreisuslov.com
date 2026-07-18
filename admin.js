@@ -62,7 +62,6 @@
   let blogTab = null;
 
   // --- blog manager state -------------------------------------------------
-  let blogMode = "list"; // "list" | "editor"
   let postModel = null; // working post object in the editor (mutated in place)
   let postCreate = false; // true = create mode (slug editable, POST on save)
   let blogSaving = false;
@@ -1162,6 +1161,11 @@
     blocksContainer = null;
     blogSaveBtn = null;
     blogSaveStatusEl = null;
+    // Clear any stranded saving flags: a Save whose response resolves after a
+    // screen/view switch early-returns without resetting these, so reset them
+    // wherever a view (re)mounts (the page editor resets `saving` the same way).
+    saving = false;
+    blogSaving = false;
     viewHost.replaceChildren();
     if (currentView === "blog") {
       renderBlogView();
@@ -1317,11 +1321,9 @@
       pendingUnsavedPost = null;
       postModel = stash.model;
       postCreate = stash.create;
-      blogMode = "editor";
       renderPostEditor(true);
       return;
     }
-    blogMode = "list";
     renderBlogList();
   }
 
@@ -1331,7 +1333,6 @@
     const myScreen = screenGen;
     onDirtyChange = null;
     dirty = false;
-    blogMode = "list";
     viewHost.replaceChildren();
 
     const main = el("main", "admin-main");
@@ -1483,7 +1484,6 @@
         draft: false,
       };
       postCreate = true;
-      blogMode = "editor";
       renderPostEditor(false);
       return;
     }
@@ -1521,7 +1521,6 @@
           if (!Array.isArray(post.tags)) post.tags = [];
           postModel = post;
           postCreate = false;
-          blogMode = "editor";
           renderPostEditor(false);
         });
       })
@@ -1771,6 +1770,13 @@
             const url = (data && data.url) || "";
             if (!url) {
               toast("Upload failed — no URL returned.", "error");
+              return;
+            }
+            // The upload endpoint is expected to return a same-origin
+            // /uploads/… path; refuse anything else so a stray/absolute URL
+            // can't be embedded (keeps the "same-origin" guarantee real).
+            if (!/^\/uploads\//.test(url)) {
+              toast("Upload rejected — unexpected image URL.", "error");
               return;
             }
             const range = quill.getSelection(true);
