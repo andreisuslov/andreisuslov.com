@@ -81,6 +81,40 @@ body {
   gap: var(--space-md);
 }
 
+/* ===== View tabs (Page / Blog) ===== */
+.admin-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-left: var(--space-md);
+}
+
+.admin-tab {
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  padding: var(--space-xs) var(--space-md);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.admin-tab:hover {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.admin-tab.is-active {
+  background: var(--color-badge-bg);
+  color: var(--color-badge-text);
+  font-weight: 600;
+}
+
 .admin-header__email {
   font-size: 0.875rem;
   color: var(--color-text-muted);
@@ -682,6 +716,159 @@ body {
   font-size: 0.9375rem;
   color: #991b1b;
   margin-bottom: var(--space-md);
+}
+
+/* ===== Blog manager ===== */
+.admin-viewhost {
+  display: block;
+}
+
+/* Blog bar: heading / back button + right-aligned action. */
+.admin-blogbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-xl) 0 var(--space-lg);
+}
+
+.admin-blogbar__title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.admin-blogbar__mode {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+/* ----- Post list ----- */
+.admin-postlist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.admin-postrow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.admin-postrow__info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.admin-postrow__titleline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.admin-postrow__title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-postrow__badge {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.admin-postrow__date {
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.admin-postrow__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-shrink: 0;
+}
+
+/* ----- Post editor form ----- */
+.admin-postform {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-sm) 0 var(--space-md);
+}
+
+/* Give stacked fields a little breathing room inside the form panel. */
+.admin-postform .admin-subfield {
+  padding: var(--space-sm) var(--space-md);
+}
+
+.admin-subfield__hint {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.admin-input--mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875rem;
+}
+
+.admin-input--date {
+  width: auto;
+  align-self: flex-start;
+}
+
+/* Read-only slug display (edit mode). */
+.admin-readonly {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875rem;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: 8px;
+  border: 1px dashed var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Draft checkbox row. */
+.admin-checkfield {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  cursor: pointer;
+}
+
+.admin-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.admin-checkfield__label {
+  font-size: 0.875rem;
+  color: var(--color-text);
 }
 
 /* ===== Sign-in screen ===== */

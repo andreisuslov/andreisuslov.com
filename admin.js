@@ -40,13 +40,38 @@
   let blockIdSeq = 0;
 
   // --- Stale-async / generation guards ------------------------------------
-  // `screenGen` bumps on every SCREEN switch (sign-in <-> dashboard). Async work
-  // that outlives its screen (content load, Save) checks it so a resolved fetch
-  // can't clobber a newer screen. `renderGen` bumps on every full editor list
-  // re-render; deferred per-card work (Quill init/text-change) checks it so a
-  // stale Quill instance can't write into a re-rendered DOM/doc.
+  // `screenGen` bumps on every SCREEN switch (sign-in <-> dashboard) AND on every
+  // top-level view switch (Page <-> Blog). Async work that outlives its screen
+  // (content load, Save, list load, upload) checks it so a resolved fetch can't
+  // clobber a newer screen/view. `renderGen` bumps on every full editor list /
+  // post-editor re-render; deferred per-card work (Quill init/text-change) checks
+  // it so a stale Quill instance can't write into a re-rendered DOM/model.
   let screenGen = 0;
   let renderGen = 0;
+
+  // --- top-level view switch (Page block editor <-> Blog manager) ---------
+  // Both views live behind the same auth gate and share the single `dirty` flag
+  // (so beforeunload and the switch-confirm cover whichever view is active).
+  // `onDirtyChange` is the active view's save-bar updater; markDirty/clearDirty
+  // call it so each view reflects its own dirty state without the other's DOM.
+  let currentView = "page"; // "page" | "blog" — defaults to Page
+  let viewHost = null; // container the active view renders into
+  let currentMe = null; // last /api/me payload, for header re-renders
+  let onDirtyChange = null;
+  let pageTab = null;
+  let blogTab = null;
+
+  // --- blog manager state -------------------------------------------------
+  let blogMode = "list"; // "list" | "editor"
+  let postModel = null; // working post object in the editor (mutated in place)
+  let postCreate = false; // true = create mode (slug editable, POST on save)
+  let blogSaving = false;
+  let blogSaveBtn = null;
+  let blogSaveStatusEl = null;
+  // Set only when a blog Save/upload is rejected by a 401: the in-memory (still
+  // unsaved) post + its mode, stashed across the forced re-sign-in so re-auth
+  // restores the editor instead of dropping the draft. Mirrors pendingUnsavedDoc.
+  let pendingUnsavedPost = null;
 
   // --- tiny DOM helpers ---------------------------------------------------
 
@@ -89,12 +114,12 @@
 
   function markDirty() {
     dirty = true;
-    updateSaveBar();
+    if (onDirtyChange) onDirtyChange();
   }
 
   function clearDirty() {
     dirty = false;
-    updateSaveBar();
+    if (onDirtyChange) onDirtyChange();
   }
 
   function updateSaveBar() {
@@ -293,6 +318,17 @@
     ["bold", "italic", "underline"],
     [{ list: "ordered" }, { list: "bullet" }],
     ["link", "blockquote"],
+    ["clean"],
+  ];
+
+  // Blog body toolbar: the page toolbar plus an image button (its handler is
+  // overridden to upload to /api/uploads and insert an <img src="/uploads/…">
+  // rather than base64-embedding the bytes).
+  const QUILL_TOOLBAR_BLOG = [
+    [{ header: [1, 2, 3, false] }],
+    ["bold", "italic", "underline"],
+    [{ list: "ordered" }, { list: "bullet" }],
+    ["link", "image", "blockquote"],
     ["clean"],
   ];
 
@@ -1049,23 +1085,33 @@
     return bar;
   }
 
-  // --- dashboard ----------------------------------------------------------
+  // --- dashboard shell + view switcher ------------------------------------
 
+  // Build the persistent dashboard chrome (header with Page/Blog tabs, the
+  // signed-in email and sign-out) once, then render whichever view is active
+  // into `viewHost`. A 401-recovery (pendingUnsavedDoc/pendingUnsavedPost) lands
+  // here after re-auth: `currentView` is preserved across the sign-in bounce, so
+  // renderView dispatches back to the right view, which restores the draft.
   function renderDashboard(me) {
-    const myScreen = ++screenGen;
-    dirty = false;
-    saving = false;
-    // Reset so the brief "Loading…" state reflects THIS session, not carryover
-    // from a previous one. (Restored below if we have unsaved edits to recover.)
-    doc = null;
-    loadError = false;
+    ++screenGen;
+    currentMe = me;
     clearRoot();
 
     const shell = el("div", "admin-shell");
 
-    // Header bar: title, signed-in email, sign-out.
     const header = el("header", "admin-header");
     header.appendChild(el("span", "admin-header__title", "Admin"));
+
+    const tabs = el("nav", "admin-tabs");
+    pageTab = el("button", "admin-tab", "Page");
+    pageTab.type = "button";
+    pageTab.addEventListener("click", () => switchView("page"));
+    blogTab = el("button", "admin-tab", "Blog");
+    blogTab.type = "button";
+    blogTab.addEventListener("click", () => switchView("blog"));
+    tabs.appendChild(pageTab);
+    tabs.appendChild(blogTab);
+    header.appendChild(tabs);
 
     const right = el("div", "admin-header__right");
     right.appendChild(el("span", "admin-header__email", (me && me.email) || ""));
@@ -1075,6 +1121,65 @@
     right.appendChild(signOutBtn);
     header.appendChild(right);
     shell.appendChild(header);
+
+    viewHost = el("div", "admin-viewhost");
+    shell.appendChild(viewHost);
+    root.appendChild(shell);
+
+    renderView();
+  }
+
+  function setActiveTab() {
+    if (pageTab) pageTab.classList.toggle("is-active", currentView === "page");
+    if (blogTab) blogTab.classList.toggle("is-active", currentView === "blog");
+  }
+
+  // Switch top-level view. Confirms first if the current view has unsaved edits
+  // (both views share the single `dirty` flag). Discards dirty on switch.
+  function switchView(target) {
+    if (target === currentView) return;
+    if (dirty) {
+      const ok =
+        typeof window.confirm === "function"
+          ? window.confirm("You have unsaved changes. Discard them and switch?")
+          : true;
+      if (!ok) return;
+    }
+    currentView = target;
+    dirty = false;
+    renderView();
+  }
+
+  // Render the active view into viewHost. Bumps screenGen so any in-flight async
+  // from the view we're leaving cancels itself, and resets both views' save-bar
+  // handles so a stale updater can't touch a detached node.
+  function renderView() {
+    ++screenGen;
+    setActiveTab();
+    onDirtyChange = null;
+    saveBtn = null;
+    saveStatusEl = null;
+    blocksContainer = null;
+    blogSaveBtn = null;
+    blogSaveStatusEl = null;
+    viewHost.replaceChildren();
+    if (currentView === "blog") {
+      renderBlogView();
+    } else {
+      renderPageView();
+    }
+  }
+
+  // --- Page view (the existing block editor) ------------------------------
+
+  function renderPageView() {
+    const myScreen = screenGen;
+    dirty = false;
+    saving = false;
+    // Reset so the brief "Loading…" state reflects THIS session, not carryover.
+    doc = null;
+    loadError = false;
+    onDirtyChange = updateSaveBar;
 
     const main = el("main", "admin-main");
     main.appendChild(
@@ -1093,9 +1198,8 @@
     main.appendChild(list);
     blocksContainer = list;
 
-    shell.appendChild(main);
-    shell.appendChild(buildSaveBar());
-    root.appendChild(shell);
+    viewHost.appendChild(main);
+    viewHost.appendChild(buildSaveBar());
 
     updateSaveBar();
 
@@ -1180,14 +1284,657 @@
     container.appendChild(box);
   }
 
+  // ========================================================================
+  // Blog view — post list + Quill post editor
+  // ========================================================================
+
+  // Local YYYY-MM-DD for the date input's default (browser-local, not UTC).
+  function isoToday() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  }
+
+  // Client-side slug preview for the create form. Mirrors server slugify()
+  // (lowercase, non-alphanumerics -> single hyphens, trimmed, capped). The
+  // server remains authoritative — this is only the editable default.
+  function clientSlugify(title) {
+    const s = (title || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 72)
+      .replace(/^-+|-+$/g, "");
+    return s;
+  }
+
+  // Blog view entry point. Recovers a 401-stashed draft if present, else lists.
+  function renderBlogView() {
+    onDirtyChange = null;
+    dirty = false;
+    if (pendingUnsavedPost) {
+      const stash = pendingUnsavedPost;
+      pendingUnsavedPost = null;
+      postModel = stash.model;
+      postCreate = stash.create;
+      blogMode = "editor";
+      renderPostEditor(true);
+      return;
+    }
+    blogMode = "list";
+    renderBlogList();
+  }
+
+  // --- post list ----------------------------------------------------------
+
+  function renderBlogList() {
+    const myScreen = screenGen;
+    onDirtyChange = null;
+    dirty = false;
+    blogMode = "list";
+    viewHost.replaceChildren();
+
+    const main = el("main", "admin-main");
+
+    const bar = el("div", "admin-blogbar");
+    bar.appendChild(el("h2", "admin-blogbar__title", "Blog posts"));
+    bar.appendChild(el("span", "admin-card__spacer"));
+    const newBtn = el("button", "admin-btn admin-btn--primary", "New post");
+    newBtn.type = "button";
+    newBtn.addEventListener("click", () => openPostEditor(null));
+    bar.appendChild(newBtn);
+    main.appendChild(bar);
+
+    const listHost = el("div", "admin-postlist");
+    listHost.appendChild(el("p", "admin-note", "Loading posts…"));
+    main.appendChild(listHost);
+    viewHost.appendChild(main);
+
+    fetch("/api/posts", { credentials: "same-origin" })
+      .then((res) => {
+        if (myScreen !== screenGen) return; // navigated away
+        if (!res.ok) {
+          renderPostListError(listHost);
+          return;
+        }
+        return res.json().then((data) => {
+          if (myScreen !== screenGen) return;
+          const posts = data && Array.isArray(data.posts) ? data.posts : null;
+          if (!posts) {
+            renderPostListError(listHost);
+            return;
+          }
+          renderPostRows(listHost, posts);
+        });
+      })
+      .catch(() => {
+        if (myScreen !== screenGen) return;
+        renderPostListError(listHost);
+      });
+  }
+
+  // Load-error state for the list (don't fabricate an empty list on failure —
+  // mirrors the page editor's renderLoadError discipline).
+  function renderPostListError(listHost) {
+    listHost.replaceChildren();
+    const box = el("div", "admin-error");
+    box.appendChild(
+      el(
+        "p",
+        "admin-error__msg",
+        "Couldn't load your posts — the server returned an error. Reload to try again."
+      )
+    );
+    const retry = el("button", "admin-btn", "Reload");
+    retry.type = "button";
+    retry.addEventListener("click", () => renderBlogList());
+    box.appendChild(retry);
+    listHost.appendChild(box);
+  }
+
+  function renderPostRows(listHost, posts) {
+    listHost.replaceChildren();
+    if (posts.length === 0) {
+      listHost.appendChild(
+        el(
+          "p",
+          "admin-note",
+          "No posts yet. Click “New post” to write your first one."
+        )
+      );
+      return;
+    }
+    posts.forEach((post) => {
+      const row = el("div", "admin-postrow");
+
+      const info = el("div", "admin-postrow__info");
+      const titleLine = el("div", "admin-postrow__titleline");
+      titleLine.appendChild(
+        el("span", "admin-postrow__title", post.title || post.slug || "(untitled)")
+      );
+      if (post.draft) {
+        titleLine.appendChild(el("span", "admin-postrow__badge", "Draft"));
+      }
+      info.appendChild(titleLine);
+      if (post.date) {
+        info.appendChild(el("span", "admin-postrow__date", String(post.date)));
+      }
+      row.appendChild(info);
+
+      const actions = el("div", "admin-postrow__actions");
+      const edit = el("button", "admin-btn admin-btn--sm", "Edit");
+      edit.type = "button";
+      edit.addEventListener("click", () => openPostEditor(post.slug));
+      actions.appendChild(edit);
+      const del = el("button", "admin-btn admin-btn--danger admin-btn--sm", "Delete");
+      del.type = "button";
+      del.addEventListener("click", () => deleteBlogPost(post.slug, post.title));
+      actions.appendChild(del);
+      row.appendChild(actions);
+
+      listHost.appendChild(row);
+    });
+  }
+
+  function deleteBlogPost(slug, title) {
+    if (!slug) return;
+    const ok =
+      typeof window.confirm === "function"
+        ? window.confirm('Delete the post "' + (title || slug) + '"?')
+        : true;
+    if (!ok) return;
+    const myScreen = screenGen;
+    fetch("/api/posts/" + encodeURIComponent(slug), {
+      method: "DELETE",
+      credentials: "same-origin",
+    })
+      .then((res) => {
+        if (myScreen !== screenGen) return;
+        if (res.ok) {
+          toast("Post deleted", "success");
+          renderBlogList();
+          return;
+        }
+        if (res.status === 401) {
+          toast("Not deleted — your session expired.", "error");
+          renderSignIn("Your session expired. Sign in again to manage posts.");
+          return;
+        }
+        toast("Delete failed (" + res.status + ")", "error");
+      })
+      .catch(() => {
+        if (myScreen !== screenGen) return;
+        toast("Delete failed — network error", "error");
+      });
+  }
+
+  // --- open the editor (create / edit) ------------------------------------
+
+  function openPostEditor(slug) {
+    if (!slug) {
+      // Create mode: a blank working model with today's date.
+      postModel = {
+        slug: "",
+        title: "",
+        html: "",
+        excerpt: "",
+        tags: [],
+        date: isoToday(),
+        draft: false,
+      };
+      postCreate = true;
+      blogMode = "editor";
+      renderPostEditor(false);
+      return;
+    }
+
+    // Edit mode: load the full post first.
+    const myScreen = screenGen;
+    viewHost.replaceChildren();
+    const main = el("main", "admin-main");
+    main.appendChild(el("p", "admin-note", "Loading post…"));
+    viewHost.appendChild(main);
+
+    fetch("/api/posts/" + encodeURIComponent(slug), { credentials: "same-origin" })
+      .then((res) => {
+        if (myScreen !== screenGen) return;
+        if (!res.ok) {
+          if (res.status === 401) {
+            toast("Your session expired.", "error");
+            renderSignIn("Your session expired. Sign in again to edit posts.");
+            return;
+          }
+          main.replaceChildren();
+          const box = el("div", "admin-error");
+          box.appendChild(
+            el("p", "admin-error__msg", "Couldn't load that post (" + res.status + ").")
+          );
+          const back = el("button", "admin-btn", "Back to list");
+          back.type = "button";
+          back.addEventListener("click", () => renderBlogList());
+          box.appendChild(back);
+          main.appendChild(box);
+          return;
+        }
+        return res.json().then((post) => {
+          if (myScreen !== screenGen) return;
+          if (!Array.isArray(post.tags)) post.tags = [];
+          postModel = post;
+          postCreate = false;
+          blogMode = "editor";
+          renderPostEditor(false);
+        });
+      })
+      .catch(() => {
+        if (myScreen !== screenGen) return;
+        toast("Couldn't load that post — network error", "error");
+        renderBlogList();
+      });
+  }
+
+  // --- post editor form ---------------------------------------------------
+
+  function renderPostEditor(isRecovery) {
+    const myScreen = screenGen;
+    const myRender = ++renderGen;
+    onDirtyChange = updateBlogSaveBar;
+    if (!Array.isArray(postModel.tags)) postModel.tags = [];
+    // Tracks whether the user has hand-edited the slug; until they do, the slug
+    // field auto-follows the title (create mode only).
+    let slugEdited = !!postModel.slug;
+    viewHost.replaceChildren();
+
+    const main = el("main", "admin-main");
+
+    const bar = el("div", "admin-blogbar");
+    const back = el("button", "admin-btn admin-btn--ghost", "← Back to list");
+    back.type = "button";
+    back.addEventListener("click", () => {
+      if (dirty) {
+        const ok =
+          typeof window.confirm === "function"
+            ? window.confirm("You have unsaved changes. Discard them and go back?")
+            : true;
+        if (!ok) return;
+      }
+      dirty = false;
+      postModel = null;
+      renderBlogList();
+    });
+    bar.appendChild(back);
+    bar.appendChild(el("span", "admin-card__spacer"));
+    bar.appendChild(
+      el("span", "admin-blogbar__mode", postCreate ? "New post" : "Editing post")
+    );
+    main.appendChild(bar);
+
+    const form = el("div", "admin-postform");
+
+    // Title
+    const titleField = el("label", "admin-subfield");
+    titleField.appendChild(el("span", "admin-subfield__label", "Title"));
+    const titleInput = el("input", "admin-input");
+    titleInput.type = "text";
+    titleInput.placeholder = "Post title";
+    titleInput.value = postModel.title || "";
+    titleInput.addEventListener("input", () => {
+      postModel.title = titleInput.value;
+      // Auto-fill the slug from the title until the user edits the slug (create).
+      if (postCreate && !slugEdited) {
+        postModel.slug = clientSlugify(titleInput.value);
+        if (slugInput) slugInput.value = postModel.slug;
+      }
+      markDirty();
+    });
+    titleField.appendChild(titleInput);
+    form.appendChild(titleField);
+
+    // Slug — editable text in create mode, read-only display in edit mode
+    // (the server keeps the slug immutable on PUT).
+    let slugInput = null;
+    const slugField = el("label", "admin-subfield");
+    slugField.appendChild(el("span", "admin-subfield__label", "Slug"));
+    if (postCreate) {
+      slugInput = el("input", "admin-input admin-input--mono");
+      slugInput.type = "text";
+      slugInput.placeholder = "auto-generated-from-title";
+      slugInput.value = postModel.slug || "";
+      slugInput.addEventListener("input", () => {
+        slugEdited = true;
+        postModel.slug = slugInput.value;
+        markDirty();
+      });
+      slugField.appendChild(slugInput);
+      slugField.appendChild(
+        el(
+          "span",
+          "admin-subfield__hint",
+          "Leave as-is to let the server generate it from the title."
+        )
+      );
+    } else {
+      const ro = el("div", "admin-readonly", postModel.slug || "");
+      slugField.appendChild(ro);
+      slugField.appendChild(
+        el("span", "admin-subfield__hint", "The slug is fixed once a post is created.")
+      );
+    }
+    form.appendChild(slugField);
+
+    // Date
+    const dateField = el("label", "admin-subfield");
+    dateField.appendChild(el("span", "admin-subfield__label", "Date"));
+    const dateInput = el("input", "admin-input admin-input--date");
+    dateInput.type = "date";
+    dateInput.value = postModel.date || isoToday();
+    dateInput.addEventListener("input", () => {
+      postModel.date = dateInput.value;
+      markDirty();
+    });
+    dateField.appendChild(dateInput);
+    form.appendChild(dateField);
+
+    // Tags (reuse the page editor's chip editor over postModel.tags)
+    const tagsField = el("div", "admin-subfield");
+    tagsField.appendChild(el("span", "admin-subfield__label", "Tags"));
+    const tagsHost = el("div", "admin-tagshost");
+    function renderPostTags(focusNew) {
+      tagsHost.replaceChildren(buildTags(postModel, renderPostTags));
+      if (focusNew) {
+        const inputs = tagsHost.querySelectorAll(".admin-tag__input");
+        const last = inputs[inputs.length - 1];
+        if (last) last.focus();
+      }
+    }
+    renderPostTags();
+    tagsField.appendChild(tagsHost);
+    form.appendChild(tagsField);
+
+    // Draft
+    const draftField = el("label", "admin-checkfield");
+    const draftCb = el("input", "admin-checkbox");
+    draftCb.type = "checkbox";
+    draftCb.checked = !!postModel.draft;
+    draftCb.addEventListener("change", () => {
+      postModel.draft = draftCb.checked;
+      markDirty();
+    });
+    draftField.appendChild(draftCb);
+    draftField.appendChild(
+      el("span", "admin-checkfield__label", "Draft (hidden from the public blog)")
+    );
+    form.appendChild(draftField);
+
+    // Excerpt (optional)
+    const exField = el("label", "admin-subfield");
+    exField.appendChild(el("span", "admin-subfield__label", "Excerpt (optional)"));
+    const exTa = el("textarea", "admin-input admin-textarea--plain");
+    exTa.placeholder = "Leave blank to derive one from the body.";
+    exTa.value = postModel.excerpt || "";
+    exTa.addEventListener("input", () => {
+      postModel.excerpt = exTa.value;
+      markDirty();
+    });
+    exField.appendChild(exTa);
+    form.appendChild(exField);
+
+    // Body (Quill)
+    const bodyField = el("div", "admin-subfield admin-field");
+    bodyField.appendChild(el("span", "admin-subfield__label", "Body"));
+    const quillHost = el("div", "admin-quill");
+    bodyField.appendChild(quillHost);
+    form.appendChild(bodyField);
+
+    main.appendChild(form);
+    viewHost.appendChild(main);
+    viewHost.appendChild(buildBlogSaveBar());
+
+    initPostQuill(quillHost, myRender, myScreen);
+
+    if (isRecovery) {
+      dirty = true;
+      toast("Signed back in — your unsaved post is here. Click Save.", "success");
+    }
+    updateBlogSaveBar();
+  }
+
+  // Quill body editor with an overridden image handler (upload -> insert <img>).
+  function initPostQuill(host, myRender, myScreen) {
+    // Graceful fallback if Quill failed to load: a plain textarea over the HTML.
+    if (typeof Quill === "undefined") {
+      const ta = el("textarea", "admin-input admin-textarea");
+      ta.value = postModel.html || "";
+      ta.addEventListener("input", () => {
+        postModel.html = ta.value;
+        markDirty();
+      });
+      host.replaceWith(ta);
+      return;
+    }
+
+    // Defer one tick so the host is attached; the generation guards cancel this
+    // if a re-render or view/screen switch lands first.
+    setTimeout(() => {
+      if (myRender !== renderGen || myScreen !== screenGen) return;
+      const q = new Quill(host, {
+        theme: "snow",
+        modules: {
+          toolbar: {
+            container: QUILL_TOOLBAR_BLOG,
+            handlers: {
+              image: function () {
+                pickBodyImage(this.quill, myRender, myScreen);
+              },
+            },
+          },
+        },
+        placeholder: "Write your post…",
+      });
+      // Seed from stored HTML FIRST, then bind text-change so the initial fill
+      // doesn't mark dirty.
+      if (postModel.html) q.clipboard.dangerouslyPasteHTML(postModel.html);
+      q.on("text-change", () => {
+        if (myRender !== renderGen || myScreen !== screenGen) return;
+        postModel.html = q.root.innerHTML;
+        markDirty();
+      });
+    }, 0);
+  }
+
+  // Open a file picker, then upload + insert the returned URL at the cursor.
+  function pickBodyImage(quill, myRender, myScreen) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.addEventListener("change", () => {
+      const file = input.files && input.files[0];
+      if (file) uploadBodyImage(file, quill, myRender, myScreen);
+    });
+    input.click();
+  }
+
+  // Upload raw image bytes to /api/uploads (same pattern as the image block's
+  // uploadImage) and insert an <img src="/uploads/…"> via the Quill API — never
+  // a base64 data URI.
+  function uploadBodyImage(file, quill, myRender, myScreen) {
+    fetch("/api/uploads", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    })
+      .then((res) => {
+        if (myScreen !== screenGen) return; // view/screen switched
+        if (res.ok) {
+          return res.json().then((data) => {
+            if (myRender !== renderGen) return; // editor re-rendered mid-upload
+            const url = (data && data.url) || "";
+            if (!url) {
+              toast("Upload failed — no URL returned.", "error");
+              return;
+            }
+            const range = quill.getSelection(true);
+            const index = range ? range.index : quill.getLength();
+            quill.insertEmbed(index, "image", url, "user");
+            quill.setSelection(index + 1, 0, "user");
+            // text-change fires from the "user" edit -> model.html + markDirty.
+            toast("Image uploaded", "success");
+          });
+        }
+        if (res.status === 401) {
+          // Session expired mid-upload. Mirror Save's recovery: stash the draft,
+          // bounce to sign-in, keep dirty so beforeunload still guards.
+          pendingUnsavedPost = { model: postModel, create: postCreate };
+          toast("Not uploaded — your session expired.", "error");
+          renderSignIn(
+            "Your session expired and your post was NOT saved. " +
+              "Sign in again, then re-insert the image and click Save."
+          );
+          dirty = true;
+          return;
+        }
+        if (res.status === 413) {
+          toast("Image too large (max 8 MB).", "error");
+          return;
+        }
+        if (res.status === 415) {
+          toast("Unsupported image type (use PNG, JPEG, WebP or GIF).", "error");
+          return;
+        }
+        toast("Upload failed (" + res.status + ")", "error");
+      })
+      .catch(() => {
+        if (myScreen !== screenGen) return;
+        toast("Upload failed — network error", "error");
+      });
+  }
+
+  // --- blog save bar ------------------------------------------------------
+
+  function buildBlogSaveBar() {
+    const bar = el("div", "admin-savebar");
+    blogSaveStatusEl = el("span", "admin-savebar__status", "");
+    blogSaveBtn = el("button", "admin-btn admin-btn--primary", "Save post");
+    blogSaveBtn.type = "button";
+    blogSaveBtn.addEventListener("click", saveBlogPost);
+    bar.appendChild(blogSaveStatusEl);
+    bar.appendChild(blogSaveBtn);
+    return bar;
+  }
+
+  function updateBlogSaveBar() {
+    if (!blogSaveBtn || !blogSaveStatusEl) return;
+    if (blogSaving) {
+      blogSaveStatusEl.textContent = "Saving…";
+      blogSaveStatusEl.className = "admin-savebar__status";
+      blogSaveBtn.disabled = true;
+      return;
+    }
+    if (dirty) {
+      blogSaveStatusEl.textContent = "Unsaved changes";
+      blogSaveStatusEl.className = "admin-savebar__status admin-savebar__status--dirty";
+      blogSaveBtn.disabled = false;
+    } else {
+      blogSaveStatusEl.textContent = "All changes saved";
+      blogSaveStatusEl.className = "admin-savebar__status";
+      blogSaveBtn.disabled = true;
+    }
+  }
+
+  function saveBlogPost() {
+    if (blogSaving || !postModel) return;
+    const title = (postModel.title || "").trim();
+    if (!title) {
+      toast("A title is required.", "error");
+      return;
+    }
+    blogSaving = true;
+    updateBlogSaveBar();
+    const myScreen = screenGen;
+    const create = postCreate;
+
+    const body = {
+      title: title,
+      html: postModel.html || "",
+      excerpt: (postModel.excerpt || "").trim(),
+      tags: Array.isArray(postModel.tags) ? postModel.tags : [],
+      date: postModel.date || "",
+      draft: !!postModel.draft,
+    };
+    // Only send a slug on create when the user actually supplied one; otherwise
+    // let the server derive it. On update the slug is immutable, so never sent.
+    if (create && (postModel.slug || "").trim()) {
+      body.slug = postModel.slug.trim();
+    }
+    const url = create
+      ? "/api/posts"
+      : "/api/posts/" + encodeURIComponent(postModel.slug);
+    const method = create ? "POST" : "PUT";
+
+    fetch(url, {
+      method: method,
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then((res) => {
+        if (myScreen !== screenGen) return; // signed out / view switched mid-save
+        blogSaving = false;
+        if (res.ok) {
+          return res.json().then((saved) => {
+            if (myScreen !== screenGen) return;
+            if (!Array.isArray(saved.tags)) saved.tags = [];
+            postModel = saved;
+            postCreate = false; // create -> edit mode for the returned slug
+            dirty = false;
+            toast("Saved", "success");
+            renderPostEditor(false); // re-render: slug now read-only, body reseeded
+          });
+        }
+        if (res.status === 401) {
+          pendingUnsavedPost = { model: postModel, create: postCreate };
+          toast("Not saved — your session expired.", "error");
+          renderSignIn(
+            "Your session expired and your post was NOT saved. " +
+              "Sign in again, then click Save."
+          );
+          dirty = true;
+          return;
+        }
+        if (res.status === 409) {
+          toast("That slug already exists — choose another.", "error");
+          updateBlogSaveBar();
+          return;
+        }
+        if (res.status === 413) {
+          toast("Post too large.", "error");
+          updateBlogSaveBar();
+          return;
+        }
+        toast("Save failed (" + res.status + ")", "error");
+        updateBlogSaveBar();
+      })
+      .catch(() => {
+        if (myScreen !== screenGen) return;
+        blogSaving = false;
+        toast("Save failed — network error", "error");
+        updateBlogSaveBar();
+      });
+  }
+
   // --- sign-in screen (mirrors editor.js's GIS flow) ----------------------
 
   function renderSignIn(message) {
     ++screenGen; // any in-flight dashboard async is now stale
     dirty = false;
+    onDirtyChange = null;
     saveBtn = null;
     saveStatusEl = null;
     blocksContainer = null;
+    blogSaveBtn = null;
+    blogSaveStatusEl = null;
+    pageTab = null;
+    blogTab = null;
     clearRoot();
 
     const wrap = el("div", "admin-signin");
@@ -1280,6 +2027,11 @@
   }
 
   function signOut() {
+    // A clean sign-out drops any stashed draft and returns to the default view.
+    currentView = "page";
+    pendingUnsavedDoc = null;
+    pendingUnsavedPost = null;
+    postModel = null;
     fetch("/api/auth/logout", {
       method: "POST",
       credentials: "same-origin",
@@ -1345,6 +2097,13 @@
     },
     isDirty: function () {
       return dirty;
+    },
+    getView: function () {
+      return currentView;
+    },
+    switchView: switchView,
+    getPostModel: function () {
+      return postModel;
     },
   };
 
