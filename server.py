@@ -359,6 +359,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._api_get_content()
         if path.startswith("/api/"):
             return self._finish(HTTPStatus.NOT_FOUND, self._json, {"error": "not found"})
+        # The admin console is a static shell (admin.html). It is NOT gated
+        # server-side: the page gates its own UI client-side and the content
+        # API stays auth-protected. Both /admin and /admin/ serve the same file.
+        if path == "/admin" or path == "/admin/":
+            return self._static("/admin.html")
         return self._static(path)
 
     def do_HEAD(self):
@@ -571,6 +576,9 @@ def selftest():
     # A trivial site so static serving has something (not exercised here).
     with open(os.path.join(tmpdir, "index.html"), "w", encoding="utf-8") as fh:
         fh.write("<!doctype html><title>selftest</title>ok")
+    # The admin shell served at /admin.
+    with open(os.path.join(tmpdir, "admin.html"), "w", encoding="utf-8") as fh:
+        fh.write("<!doctype html><title>admin selftest</title>admin-ok")
 
     app = App(site_dir=tmpdir, data_dir=os.path.join(tmpdir, "_data"),
               client_id=client_id, allow_email=allow_email, verify=fake_verify)
@@ -757,6 +765,22 @@ def selftest():
               cfg_resp.status == 200
               and cfg_body.get("googleClientId") == client_id
               and cfg_cache == "no-store")
+
+        # 12. /admin (and /admin/) serve the admin shell as HTML, ungated.
+        def get_html(path):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            body = resp.read()
+            ctype = resp.getheader("Content-Type") or ""
+            conn.close()
+            return resp.status, ctype, body
+
+        a_status, a_ctype, a_body = get_html("/admin")
+        s_status, _, _ = get_html("/admin/")
+        check("12. GET /admin (and /admin/) serve admin.html as HTML -> 200",
+              a_status == 200 and s_status == 200
+              and "text/html" in a_ctype and b"admin-ok" in a_body)
 
     finally:
         httpd.shutdown()

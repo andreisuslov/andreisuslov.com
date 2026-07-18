@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Admin — Andrei Suslov</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛠️</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="admin.css?v=20260718a">
+</head>
+<body>
+  <!-- The admin console renders entirely from admin.js. It gates its own UI:
+       the sign-in screen for anyone without a session, the read-only dashboard
+       for the allow-listed owner. It never loads the public script.js/editor.js. -->
+  <div id="admin-root"></div>
+
+  <script src="content-default.js?v=20260718a"></script>
+  <script src="admin.js?v=20260718a"></script>
+</body>
+</html>
