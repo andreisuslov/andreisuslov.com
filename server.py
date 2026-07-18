@@ -543,6 +543,44 @@ def sanitize_html(raw):
     return "".join(parser.out)
 
 
+def sanitize_content(doc):
+    """Sanitize a homepage block document IN PLACE before it is stored, giving
+    the public page the same defenses the blog already has.
+
+    The public renderer (script.js) injects `richtext.html` via innerHTML and
+    assigns `socials[].url` / `image.src` straight onto DOM attributes with no
+    scheme check, so we neutralize those server-side:
+
+      * every `richtext` block's `html` is run through sanitize_html;
+      * every `socials` item `url` and every `image` block `src` is scheme-
+        checked with _safe_url (a dropped/unsafe URL becomes "").
+
+    Tolerant of any malformed block — only recognized, present fields are
+    touched, everything else is left intact, and it never raises."""
+    if not isinstance(doc, dict):
+        return doc
+    blocks = doc.get("blocks")
+    if not isinstance(blocks, list):
+        return doc
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "richtext" and "html" in block:
+            block["html"] = sanitize_html(block.get("html") or "")
+        elif btype == "image" and "src" in block:
+            # data:image/... stays, javascript:/vbscript:/other data: dropped.
+            block["src"] = _safe_url(block.get("src"), "src") or ""
+        elif btype == "socials":
+            items = block.get("items")
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict) and "url" in item:
+                        # A social link is a navigable href: no data: allowed.
+                        item["url"] = _safe_url(item.get("url"), "href") or ""
+    return doc
+
+
 # Block-level tags: their boundaries become whitespace when flattening to text,
 # so "<p>a</p><p>b</p>" reads "a b" (not "ab") in excerpts.
 _TEXT_BLOCK_TAGS = {
@@ -661,7 +699,7 @@ def _page_shell(page_title, body_html, description=""):
         "  <link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n"
         "  <link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n"
         "  <link href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap\" rel=\"stylesheet\">\n"
-        "  <link rel=\"stylesheet\" href=\"/style.css\">\n"
+        "  <link rel=\"stylesheet\" href=\"/style.css?v=20260718b\">\n"
         "</head>\n"
         "<body>\n"
         "  <nav class=\"nav\">\n"
@@ -1116,7 +1154,10 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(obj, dict):
             return self._finish(HTTPStatus.BAD_REQUEST, self._json,
                                 {"error": "content must be an object"})
-        self.app.write_content(obj)
+        # Sanitize BEFORE storing so the public renderer (which injects richtext
+        # via innerHTML and trusts socials/image URLs) can never serve hostile
+        # markup — the same posture the blog already takes.
+        self.app.write_content(sanitize_content(obj))
         return self._finish(HTTPStatus.OK, self._json, {"ok": True})
 
     # -- API: posts ---------------------------------------------------------
@@ -1828,6 +1869,35 @@ def selftest():
         check("34. data: href dropped; data:image src kept",
               "data:text/html" not in html34
               and "data:image/png;base64,AAAA" in html34)
+
+        # 35. Homepage content is sanitized on store, mirroring the blog: a
+        #     richtext block is run through sanitize_html and socials/image URLs
+        #     are scheme-checked. `up_sid` is still a valid owner session.
+        bad_doc = {
+            "blocks": [
+                {"type": "richtext",
+                 "html": "<p>ok</p><script>alert(1)</script>"
+                         "<img src=\"x\" onerror=\"evil()\">"
+                         "<a href=\"javascript:evil()\">x</a>"},
+                {"type": "socials",
+                 "items": [{"name": "X", "url": "javascript:evil()",
+                            "icon": "github"}]},
+                {"type": "image", "src": "javascript:evil()"},
+            ],
+        }
+        request("PUT", "/api/content", body=bad_doc, cookie=up_sid,
+                origin=origin)
+        _, got35, _ = request("GET", "/api/content")
+        g_blocks = (got35 or {}).get("blocks", [])
+        rich = g_blocks[0].get("html", "") if len(g_blocks) > 0 else ""
+        social_url = (g_blocks[1]["items"][0].get("url", "x")
+                      if len(g_blocks) > 1 else "x")
+        img_src = g_blocks[2].get("src", "x") if len(g_blocks) > 2 else "x"
+        check("35. PUT /api/content sanitizes richtext/socials/image on store",
+              "<script" not in rich and "alert(1)" not in rich
+              and "onerror" not in rich and "javascript:" not in rich
+              and "ok" in rich
+              and social_url == "" and img_src == "")
 
     finally:
         httpd.shutdown()

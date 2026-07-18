@@ -2093,25 +2093,29 @@
 
   // Internal signals for tests/inspection: the loaded document (null until we
   // truly know the server's state), the load-error flag, and dirty state.
-  window.__admin = {
-    start: start,
-    getDoc: function () {
-      return doc;
-    },
-    hasLoadError: function () {
-      return loadError;
-    },
-    isDirty: function () {
-      return dirty;
-    },
-    getView: function () {
-      return currentView;
-    },
-    switchView: switchView,
-    getPostModel: function () {
-      return postModel;
-    },
-  };
+  // Exposed ONLY on local dev hosts so this inspection hook never ships on the
+  // production domain.
+  if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
+    window.__admin = {
+      start: start,
+      getDoc: function () {
+        return doc;
+      },
+      hasLoadError: function () {
+        return loadError;
+      },
+      isDirty: function () {
+        return dirty;
+      },
+      getView: function () {
+        return currentView;
+      },
+      switchView: switchView,
+      getPostModel: function () {
+        return postModel;
+      },
+    };
+  }
 
   start();
 })();

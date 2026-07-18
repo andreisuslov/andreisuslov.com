@@ -3,6 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Content-Security-Policy scoped to exactly what this page loads: same-origin
+       script.js/content-default.js/style.css, Google Fonts (CSS + woff2), and
+       same-origin + data: images (the favicon is an inline data: SVG). Admin
+       (Quill) needs inline styles, so it deliberately has NO CSP. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; base-uri 'none'">
   <meta name="description" content="Andrei Suslov — Software Development Engineer in Test. Test automation, CI/CD, and developer tooling.">
   <title>Andrei Suslov</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👨‍💻</text></svg>">
