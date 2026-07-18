@@ -129,6 +129,22 @@ SANITIZE_DROP_TAGS = {"script", "style"}
 # Attributes that carry URLs and must be scheme-checked.
 SANITIZE_URL_ATTRS = {"href", "src"}
 
+# Content-Security-Policy for the server-rendered blog pages. These pages run NO
+# JavaScript and load only same-origin /style.css plus Google Fonts (the exact
+# hosts _page_shell emits: fonts.googleapis.com for the CSS, fonts.gstatic.com
+# for the woff2 files). img-src allows same-origin uploads and data: images
+# (which the sanitizer permits inline). This makes any hypothetical future
+# sanitizer gap inert — injected script simply cannot execute.
+BLOG_CSP = (
+    "default-src 'self'; "
+    "script-src 'none'; "
+    "style-src 'self' https://fonts.googleapis.com; "
+    "font-src https://fonts.gstatic.com; "
+    "img-src 'self' data:; "
+    "base-uri 'none'; "
+    "frame-ancestors 'none'"
+)
+
 
 # --- Google token verification ----------------------------------------------
 
@@ -416,17 +432,21 @@ def unique_slug(base, existing):
     return slug
 
 
-def _safe_url(value):
-    """Return the URL if safe to keep, else None. Neutralizes javascript:,
-    vbscript: and data: URLs — except data:image/... which is allowed so inline
-    images still work. Leading control/whitespace chars (which browsers ignore
-    when resolving the scheme) are stripped before the check."""
+def _safe_url(value, attr):
+    """Return the URL if safe to keep, else None. Neutralizes javascript: and
+    vbscript: everywhere. data: URLs are dropped entirely on `href` and allowed
+    only as `data:image/...` on `src` (so inline images work but a data: link
+    can't smuggle a navigable document). Leading control/whitespace chars
+    (which browsers ignore when resolving the scheme) are stripped first."""
     v = (value or "").strip()
     # A scheme cannot contain these; stripping them prevents `java\tscript:` etc.
     probe = re.sub(r"[\x00-\x20]+", "", v).lower()
     if probe.startswith(("javascript:", "vbscript:")):
         return None
-    if probe.startswith("data:") and not probe.startswith("data:image/"):
+    if probe.startswith("data:"):
+        # data: only ever allowed as an inline image source, never as a link.
+        if attr == "src" and probe.startswith("data:image/"):
+            return v
         return None
     return v
 
@@ -443,19 +463,35 @@ class _Sanitizer(HTMLParser):
     def _render_start(self, tag, attrs, self_close):
         allowed = SANITIZE_ALLOWED_ATTRS.get(tag, ())
         parts = [tag]
+        kept = {}  # lowercased attr name -> emitted value (for post-processing)
         for name, val in attrs:
             name = name.lower()
             if name.startswith("on") or name not in allowed:
                 continue
             if val is None:
                 parts.append(name)
+                kept[name] = None
                 continue
             if name in SANITIZE_URL_ATTRS:
-                safe = _safe_url(val)
+                safe = _safe_url(val, name)
                 if safe is None:
                     continue
                 val = safe
             parts.append(f'{name}="{html.escape(val, quote=True)}"')
+            kept[name] = val
+        # Reverse-tabnabbing guard: any anchor that opens a new context must
+        # carry rel="noopener noreferrer". Force it on output, merging with (and
+        # de-duplicating) whatever rel the author supplied.
+        if tag == "a" and (kept.get("target") or "").lower() == "_blank":
+            tokens = (kept.get("rel") or "").split()
+            for required in ("noopener", "noreferrer"):
+                if required not in tokens:
+                    tokens.append(required)
+            rel_val = " ".join(tokens)
+            if "rel" in kept:
+                # Replace the rel attribute already appended above.
+                parts = [p for p in parts if not p.startswith('rel="')]
+            parts.append(f'rel="{html.escape(rel_val, quote=True)}"')
         inner = " ".join(parts)
         return f"<{inner} />" if self_close else f"<{inner}>"
 
@@ -859,10 +895,15 @@ class Handler(BaseHTTPRequestHandler):
         return self._static(path)
 
     def do_HEAD(self):
-        # Serve headers only for static assets; APIs are GET/POST/PUT.
+        # Serve headers only for static assets and blog pages; APIs are
+        # GET/POST/PUT/DELETE. _send omits the body for HEAD automatically.
         path = urllib.parse.urlsplit(self.path).path
         if path.startswith("/api/"):
             return self._finish(HTTPStatus.NOT_FOUND, self._json, {"error": "not found"})
+        if path == "/blog" or path == "/blog/":
+            return self._blog_index()
+        if path.startswith("/blog/"):
+            return self._blog_post(path[len("/blog/"):])
         if path.startswith("/uploads/"):
             return self._serve_upload(path)
         return self._static(path)
@@ -1230,23 +1271,25 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- Public blog pages (server-rendered HTML) ---------------------------
 
+    def _send_blog(self, status, body):
+        """Send a server-rendered blog page with a strict Content-Security-
+        Policy. These pages carry no JS, so the CSP is defense-in-depth against
+        any future sanitizer gap."""
+        self._send(status, body, "text/html; charset=utf-8",
+                   {"Content-Security-Policy": BLOG_CSP})
+        self._log(status)
+
     def _blog_index(self):
         posts = [p for p in self.app.list_posts() if not p.get("draft")]
         posts.sort(key=_post_sort_key, reverse=True)
-        body = render_blog_index(posts)
-        self._send(HTTPStatus.OK, body, "text/html; charset=utf-8")
-        self._log(HTTPStatus.OK)
+        self._send_blog(HTTPStatus.OK, render_blog_index(posts))
 
     def _blog_post(self, raw):
         slug = self._post_slug(raw)
         post = self.app.read_post(slug) if slug else None
         if not post or post.get("draft"):
-            self._send(HTTPStatus.NOT_FOUND, render_blog_404(),
-                       "text/html; charset=utf-8")
-            return self._log(HTTPStatus.NOT_FOUND)
-        self._send(HTTPStatus.OK, render_blog_post(post),
-                   "text/html; charset=utf-8")
-        self._log(HTTPStatus.OK)
+            return self._send_blog(HTTPStatus.NOT_FOUND, render_blog_404())
+        self._send_blog(HTTPStatus.OK, render_blog_post(post))
 
     # -- API: uploads (auth'd write) ----------------------------------------
 
@@ -1741,6 +1784,50 @@ def selftest():
                        if n.endswith(".json"))
         check("31. Slug traversal rejected; posts dir stays confined",
               st_api == 404 and st_put == 404 and st_post == 400 and confined)
+
+        # --- defense-in-depth hardening -----------------------------------
+
+        # 32. Server-rendered blog pages carry the strict CSP header.
+        def header_of(path, name):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            resp.read()
+            val = resp.getheader(name)
+            conn.close()
+            return val
+
+        csp_index = header_of("/blog", "Content-Security-Policy")
+        csp_post = header_of("/blog/" + slug1, "Content-Security-Policy")
+        csp_404 = header_of("/blog/does-not-exist", "Content-Security-Policy")
+        check("32. /blog, /blog/<slug> and blog 404 send the strict CSP header",
+              csp_index == BLOG_CSP and csp_post == BLOG_CSP
+              and csp_404 == BLOG_CSP
+              and "script-src 'none'" in (csp_index or "")
+              and "fonts.googleapis.com" in (csp_index or "")
+              and "fonts.gstatic.com" in (csp_index or ""))
+
+        # 33. target="_blank" anchors get rel="noopener noreferrer" on store.
+        _, b33, _ = request("POST", "/api/posts",
+                           body={"title": "Tab Nabbing",
+                                 "html": "<a href=\"/x\" target=\"_blank\">go</a>"},
+                           cookie=up_sid, origin=origin)
+        html33 = b33.get("html", "") if b33 else ""
+        check("33. target=_blank anchor forced to rel=noopener noreferrer",
+              'target="_blank"' in html33 and "noopener" in html33
+              and "noreferrer" in html33)
+
+        # 34. data:text/html on href is dropped; data:image on src is kept.
+        _, b34, _ = request("POST", "/api/posts",
+                           body={"title": "Data URLs",
+                                 "html": "<a href=\"data:text/html,<b>x</b>\">l</a>"
+                                         "<img src=\"data:image/png;base64,AAAA\" "
+                                         "alt=\"i\">"},
+                           cookie=up_sid, origin=origin)
+        html34 = b34.get("html", "") if b34 else ""
+        check("34. data: href dropped; data:image src kept",
+              "data:text/html" not in html34
+              and "data:image/png;base64,AAAA" in html34)
 
     finally:
         httpd.shutdown()
