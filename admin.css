@@ -178,6 +178,20 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* ===== Load error state ===== */
+.admin-error {
+  padding: var(--space-lg);
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius);
+}
+
+.admin-error__msg {
+  font-size: 0.9375rem;
+  color: #991b1b;
+  margin-bottom: var(--space-md);
+}
+
 /* ===== Sign-in screen ===== */
 .admin-signin {
   min-height: 100vh;

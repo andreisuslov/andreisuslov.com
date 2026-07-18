@@ -15,7 +15,12 @@
   let gisPromise = null;
 
   // The working document (set once the dashboard loads content). C3 mutates it.
+  // It is ONLY non-null when we truly know the server's state: either the server
+  // has no content yet (404 -> DEFAULT_CONTENT) or it returned a real document.
+  // On any load error `doc` stays null and `loadError` is set, so C3's Save path
+  // can refuse to overwrite unknown server state with defaults.
   let doc = null;
+  let loadError = false;
 
   // --- tiny DOM helpers ---------------------------------------------------
 
@@ -106,28 +111,65 @@
     shell.appendChild(main);
     root.appendChild(shell);
 
-    loadContent().then((loaded) => {
-      doc = loaded;
-      renderBlockList(list, doc);
+    loadContent().then((result) => {
+      loadError = !!result.error;
+      doc = result.doc;
+      if (loadError) {
+        renderLoadError(list);
+      } else {
+        renderBlockList(list, doc);
+      }
     });
   }
 
-  // Fetch the server document; fall back to DEFAULT_CONTENT on 404/empty/error.
+  // Load the server document, distinguishing the failure modes so C3's Save path
+  // never overwrites unknown server state with defaults. Resolves to
+  // { doc, error }:
+  //   - 404               -> first run, nothing saved yet: seed DEFAULT_CONTENT.
+  //                          This is the ONLY case that silently uses defaults.
+  //   - ok + {blocks:[…>0]} -> the authoritative server document.
+  //   - any other non-ok (500/503/…), a network failure, bad JSON, or an ok
+  //     response that isn't a non-empty block doc -> { doc:null, error:true }.
+  //     doc stays null so a future Save can refuse until server state is known.
   function loadContent() {
     return fetch("/api/content", { credentials: "same-origin" })
-      .then((res) => (res.ok ? res.json() : null))
-      .catch(() => null)
-      .then((content) => {
-        if (
-          content &&
-          typeof content === "object" &&
-          Array.isArray(content.blocks) &&
-          content.blocks.length > 0
-        ) {
-          return content;
+      .then((res) => {
+        if (res.status === 404) {
+          return { doc: DEFAULT_CONTENT, error: false };
         }
-        return DEFAULT_CONTENT;
-      });
+        if (!res.ok) {
+          return { doc: null, error: true };
+        }
+        return res.json().then((content) => {
+          if (
+            content &&
+            typeof content === "object" &&
+            Array.isArray(content.blocks) &&
+            content.blocks.length > 0
+          ) {
+            return { doc: content, error: false };
+          }
+          // 200 but not a usable block doc (empty/truncated/malformed). Treat as
+          // unknown state, NOT a silent reset to defaults.
+          return { doc: null, error: true };
+        });
+      })
+      .catch(() => ({ doc: null, error: true }));
+  }
+
+  // Visible error state shown in the dashboard body when content can't be loaded
+  // and defaults must NOT be substituted. Leaves `doc` null (set by the caller).
+  function renderLoadError(container) {
+    container.replaceChildren();
+    const box = el("div", "admin-error");
+    box.appendChild(el("p", "admin-error__msg",
+      "Couldn't load your content — the server returned an error. " +
+      "Reload to try again."));
+    const retry = el("button", "admin-btn", "Reload");
+    retry.type = "button";
+    retry.addEventListener("click", () => location.reload());
+    box.appendChild(retry);
+    container.appendChild(box);
   }
 
   function renderBlockList(container, document_) {
@@ -289,7 +331,13 @@
       .catch(() => renderSignIn("Something went wrong loading the console."));
   }
 
-  window.__admin = { start: start };
+  // Internal signals C3 can read: the loaded document (null until we truly know
+  // the server's state) and whether the last load errored.
+  window.__admin = {
+    start: start,
+    getDoc: function () { return doc; },
+    hasLoadError: function () { return loadError; },
+  };
 
   start();
 })();
