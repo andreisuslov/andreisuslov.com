@@ -40,8 +40,8 @@ function renderPortrait(block) {
   const wrap = el("div", "block block--portrait fade-in");
   // width / offsetX drive the gutter placement via CSS custom properties, so
   // the responsive breakpoints in style.css can still override the width.
-  wrap.style.setProperty("--portrait-width", (block.width || 180) + "px");
-  wrap.style.setProperty("--portrait-offset", (block.offsetX || 212) + "px");
+  wrap.style.setProperty("--portrait-width", (block.width ?? 180) + "px");
+  wrap.style.setProperty("--portrait-offset", (block.offsetX ?? 212) + "px");
 
   const swap = el("div", "face-swap");
   swap.setAttribute("role", "img");
@@ -84,9 +84,9 @@ function renderList(block) {
   return list;
 }
 
-// Build one project/experience card. `withCourse` adds the role/date line used
-// by the experience grid.
-function buildCard(item, withCourse) {
+// Build one project/experience card. `withSubtitle` adds the role/date line
+// used by the experience grid.
+function buildCard(item, withSubtitle) {
   let card;
   if (item.github) {
     card = el("a");
@@ -102,10 +102,10 @@ function buildCard(item, withCourse) {
   name.textContent = item.name;
   card.appendChild(name);
 
-  if (withCourse && item.course) {
-    const course = el("span", "project-card__course");
-    course.textContent = item.course;
-    card.appendChild(course);
+  if (withSubtitle && item.subtitle) {
+    const subtitle = el("span", "project-card__course");
+    subtitle.textContent = item.subtitle;
+    card.appendChild(subtitle);
   }
 
   const desc = el("p", "project-card__desc");
@@ -256,7 +256,14 @@ initScrollEffects();
 fetch("/api/content", { credentials: "same-origin" })
   .then((res) => (res.ok ? res.json() : null))
   .then((content) => {
-    if (content && typeof content === "object" && Array.isArray(content.blocks)) {
+    // Only upgrade from a non-empty document. An empty array (a truncated or
+    // mis-saved content.json) would blank the page, so we keep the default.
+    if (
+      content &&
+      typeof content === "object" &&
+      Array.isArray(content.blocks) &&
+      content.blocks.length > 0
+    ) {
       render(content);
     }
   })

@@ -102,19 +102,19 @@ const DEFAULT_CONTENT = {
       items: [
         {
           name: "Avid Technology",
-          course: "Software Development Engineer in Test · 2021 – present",
+          subtitle: "Software Development Engineer in Test · 2021 – present",
           description: "API, UI, and database test automation for media-production software used across the film and TV industry. Built a distributed Jenkins/Docker/Selenoid test infrastructure that cut runtimes by 25%, migrated 200+ freestyle Jenkins jobs to shared-library pipelines, and established the evaluation framework for a new AI transcription feature.",
           tags: ["Java", "Groovy", "TypeScript", "Jenkins", "Docker"],
         },
         {
           name: "Liberty Mutual",
-          course: "QA Automation Engineer · 2018 – 2021",
+          subtitle: "QA Automation Engineer · 2018 – 2021",
           description: "Selenium, Cucumber, and Jasmine frameworks enabling 24/7 testing; cross-browser coverage via Sauce Labs; Rest Assured + MySQL data validation at 99.9% accuracy; standardized Jenkins pipelines across 15+ projects.",
           tags: ["Selenium", "Cucumber", "CI/CD"],
         },
         {
           name: "U.S. Air Force Reserve",
-          course: "Senior Airman · 2025 – present",
+          subtitle: "Senior Airman · 2025 – present",
           description: "Basic Military Training Honor Graduate and Best Wingman of the flight; Black Rope student leader at Keesler AFB; active DoD security clearance.",
           tags: ["Leadership", "Discipline"],
         },

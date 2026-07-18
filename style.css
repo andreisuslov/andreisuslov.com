@@ -186,7 +186,6 @@ section {
 /* Placement is driven by the block's fields via custom properties:
    --portrait-width and --portrait-offset (px the face sits left of the
    content column). Responsive breakpoints below can still override width. */
-.portrait,
 .block--portrait {
   position: absolute;
   top: var(--space-4xl);
@@ -200,12 +199,6 @@ section {
   line-height: 1.1;
   letter-spacing: -0.03em;
   margin-bottom: var(--space-lg);
-}
-
-.hero__text {
-  font-size: var(--font-size-lg);
-  color: var(--color-text-muted);
-  line-height: 1.75;
 }
 
 /* Face-swap component — grinning face when the cursor is over the face pixels
@@ -239,12 +232,6 @@ section {
 }
 
 /* ===== ABOUT ===== */
-.about__text {
-  font-size: var(--font-size-lg);
-  color: var(--color-text-muted);
-  line-height: 1.75;
-}
-
 .about__list {
   margin-top: var(--space-md);
   padding-left: var(--space-lg);
@@ -344,84 +331,7 @@ section {
   opacity: 0.8;
 }
 
-/* ===== PUBLICATIONS ===== */
-.publications__list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-lg);
-}
-
-.publication-card {
-  display: block;
-  padding: var(--space-lg);
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
-  background: var(--color-bg);
-  transition:
-    background-color var(--transition-base),
-    box-shadow var(--transition-base),
-    transform var(--transition-base);
-}
-
-.publication-card:hover {
-  background: var(--color-card-bg);
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
-  transform: translateY(-2px);
-}
-
-.publication-card__title {
-  font-size: var(--font-size-base);
-  font-weight: 600;
-  margin-bottom: var(--space-sm);
-  line-height: 1.4;
-  letter-spacing: -0.01em;
-}
-
-.publication-card__authors {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-  margin-bottom: var(--space-xs);
-  line-height: 1.5;
-}
-
-.publication-card__venue {
-  font-size: var(--font-size-sm);
-  color: var(--color-accent);
-  font-style: italic;
-  margin-bottom: var(--space-md);
-  line-height: 1.5;
-}
-
-.publication-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-sm);
-}
-
-.publication-card__location {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-}
-
 /* ===== CONTACT / FOOTER ===== */
-.contact {
-  padding-bottom: var(--space-4xl);
-}
-
-.contact__text {
-  font-size: var(--font-size-lg);
-  color: var(--color-text-muted);
-  margin-bottom: var(--space-md);
-  line-height: 1.75;
-}
-
-.contact__location {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-  margin-bottom: var(--space-lg);
-}
-
 .contact__socials {
   display: flex;
   gap: var(--space-md);
@@ -509,10 +419,6 @@ section {
   }
 
   .project-card {
-    padding: var(--space-md);
-  }
-
-  .publication-card {
     padding: var(--space-md);
   }
 }
