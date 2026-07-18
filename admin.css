@@ -378,23 +378,160 @@ body {
   color: var(--color-text-muted);
 }
 
-/* Structured-card placeholder (projects/experience/socials, C3b) */
-.admin-placeholder {
-  padding: var(--space-md);
-  border: 1px dashed var(--color-border);
-  border-radius: 8px;
-  background: var(--color-surface);
-}
-
-.admin-placeholder__count {
+/* Plain-text description textarea (projects/experience) — prose, not code, so
+   it uses the regular UI font rather than the monospace of the richtext HTML
+   fallback. */
+.admin-textarea--plain {
+  min-height: 88px;
+  font-family: inherit;
   font-size: 0.9375rem;
-  font-weight: 500;
 }
 
+/* Fallback note for unknown block types. */
 .admin-placeholder__note {
-  margin-top: var(--space-xs);
   font-size: 0.8125rem;
   color: var(--color-text-muted);
+}
+
+/* ===== Structured card lists (projects / experience / socials) ===== */
+.admin-subcards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.admin-subcard {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.admin-subcard__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+
+.admin-subcard__num {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Sub-card fields stack a small label over the control. */
+.admin-subfield {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+}
+
+.admin-subfield + .admin-subfield {
+  padding-top: 0;
+}
+
+.admin-subfield__label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+.admin-addcard {
+  align-self: flex-start;
+}
+
+/* Icon preview in a social sub-card header. */
+.admin-social-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: var(--color-text-muted);
+}
+
+.admin-social-preview svg {
+  width: 100%;
+  height: 100%;
+}
+
+.admin-select--icon {
+  align-self: flex-start;
+  min-width: 8rem;
+}
+
+/* ===== Editable tag chips ===== */
+.admin-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.admin-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 2px 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-badge-bg);
+}
+
+.admin-tag__input {
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-badge-text);
+  border: none;
+  background: transparent;
+  padding: 0;
+  min-width: 3ch;
+}
+
+.admin-tag__input:focus {
+  outline: none;
+}
+
+.admin-tag__rm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 0.875rem;
+  line-height: 1;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-badge-text);
+  cursor: pointer;
+}
+
+.admin-tag__rm:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.admin-tag-add {
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  padding: 2px var(--space-sm);
+  border: 1px dashed var(--color-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.admin-tag-add:hover {
+  border-color: var(--color-text-muted);
+  color: var(--color-text);
 }
 
 /* ===== Quill (snow theme) fit ===== */

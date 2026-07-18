@@ -2,10 +2,9 @@
 // loads or touches the public render path (script.js) or the retired in-page
 // editor (editor.js). It authenticates the owner, loads the current block
 // document, and now lets the owner EDIT it: reorder/add/delete blocks, edit the
-// text blocks (heading / richtext via Quill / list / portrait), and Save back
-// to /api/content. Structured-card editors (projects / experience / socials)
-// arrive in C3b — here they render a read-only placeholder whose data is kept
-// untouched so Save round-trips it.
+// text blocks (heading / richtext via Quill / list / portrait), the structured
+// card lists (projects / experience) and socials, and Save back to
+// /api/content.
 //
 // Everything lives inside this IIFE so admin identifiers stay off the global
 // scope. The sign-in flow mirrors editor.js exactly (lazy GIS + /api/config +
@@ -60,10 +59,6 @@
 
   function clearRoot() {
     root.replaceChildren();
-  }
-
-  function count(arr) {
-    return Array.isArray(arr) ? arr.length : 0;
   }
 
   // Deep clone a plain block document (structuredClone where available, else a
@@ -443,20 +438,357 @@
     return wrap;
   }
 
-  // Read-only placeholder for the structured-card blocks (C3b). Their data lives
-  // in `doc` untouched, so Save round-trips it faithfully.
-  function buildPlaceholder(block) {
+  // --- structured card lists (projects / experience / socials) -----------
+  // These edit a block's `items` array in place. The discipline mirrors the
+  // text editors: a field KEYSTROKE only mutates `doc` + markDirty() (never a
+  // re-render, so focus/caret survive), while STRUCTURAL changes (add / delete /
+  // reorder a card, add / remove a tag) re-render just this block's item list
+  // (or, for a tag change, just the one card) — never the whole editor list, so
+  // other blocks' Quill instances and focus are untouched.
+
+  // Valid social-icon keys. KEEP IN SYNC with ICON_PATHS in script.js — the
+  // public renderer draws the SVG for whichever key is stored here.
+  const ICON_KEYS = ["github", "linkedin", "mail", "external"];
+
+  // Minimal copy of the icon paths for the admin-side preview only. KEEP IN SYNC
+  // with ICON_PATHS in script.js (script.js is not loaded on /admin).
+  const ICON_PREVIEW = {
+    github:
+      "M12 0C5.374 0 0 5.373 0 12c0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0 1 12 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.627-5.373-12-12-12z",
+    linkedin:
+      "M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z",
+    mail:
+      "M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z",
+    external:
+      "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3",
+  };
+
+  function iconSvg(iconName) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "currentColor");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", ICON_PREVIEW[iconName] || "");
+    svg.appendChild(path);
+    return svg;
+  }
+
+  // A labelled single-line text field that writes value -> onInput on every
+  // keystroke and NEVER re-renders. Returns { field, input } so callers can tag
+  // the input (e.g. as the focus target after adding a card).
+  function textField(label, value, placeholder, onInput) {
+    const field = el("label", "admin-subfield");
+    field.appendChild(el("span", "admin-subfield__label", label));
+    const input = el("input", "admin-input");
+    input.type = "text";
+    if (placeholder) input.placeholder = placeholder;
+    input.value = value == null ? "" : String(value);
+    input.addEventListener("input", () => onInput(input.value));
+    field.appendChild(input);
+    return { field: field, input: input };
+  }
+
+  // A labelled plain-text (NOT rich-text) multi-line field. The public renderer
+  // puts project/experience descriptions in via textContent, so plain text is
+  // exactly right here — no Quill.
+  function textareaField(label, value, placeholder, onInput) {
+    const field = el("label", "admin-subfield");
+    field.appendChild(el("span", "admin-subfield__label", label));
+    const ta = el("textarea", "admin-input admin-textarea admin-textarea--plain");
+    if (placeholder) ta.placeholder = placeholder;
+    ta.value = value == null ? "" : String(value);
+    ta.addEventListener("input", () => onInput(ta.value));
+    field.appendChild(ta);
+    return field;
+  }
+
+  // Move items[from] -> items[to] within one block. Returns whether it moved.
+  function moveItem(items, from, to) {
+    if (from < 0 || from >= items.length || to < 0 || to >= items.length) return false;
+    if (from === to) return false;
+    const [moved] = items.splice(from, 1);
+    items.splice(to, 0, moved);
+    markDirty();
+    return true;
+  }
+
+  // Shared sub-card header: index label, an optional lead node (e.g. an icon
+  // preview), reorder up/down, and a confirm-gated delete. `rerender` rebuilds
+  // the whole block's item list after a structural change.
+  function subCardHead(items, idx, rerender, leadNode) {
+    const head = el("div", "admin-subcard__head");
+    head.appendChild(el("span", "admin-subcard__num", "#" + (idx + 1)));
+    if (leadNode) head.appendChild(leadNode);
+    head.appendChild(el("span", "admin-card__spacer"));
+
+    const up = el("button", "admin-card__move", "▲");
+    up.type = "button";
+    up.title = "Move up";
+    up.setAttribute("aria-label", "Move card up");
+    up.disabled = idx === 0;
+    up.addEventListener("click", () => {
+      if (moveItem(items, idx, idx - 1)) rerender();
+    });
+    head.appendChild(up);
+
+    const down = el("button", "admin-card__move", "▼");
+    down.type = "button";
+    down.title = "Move down";
+    down.setAttribute("aria-label", "Move card down");
+    down.disabled = idx === items.length - 1;
+    down.addEventListener("click", () => {
+      if (moveItem(items, idx, idx + 1)) rerender();
+    });
+    head.appendChild(down);
+
+    const del = el("button", "admin-btn admin-btn--danger admin-btn--sm", "Delete");
+    del.type = "button";
+    del.addEventListener("click", () => {
+      const ok =
+        typeof window.confirm === "function"
+          ? window.confirm("Delete this card?")
+          : true;
+      if (!ok) return;
+      items.splice(idx, 1);
+      markDirty();
+      rerender();
+    });
+    head.appendChild(del);
+
+    return head;
+  }
+
+  // Editable tag chips for one item. Text edits mutate doc+dirty with no
+  // re-render (focus-preserving); add/remove re-renders just the owning card via
+  // `rerenderCard` (rerenderCard(true) focuses the freshly added tag input).
+  function buildTags(item, rerenderCard) {
+    if (!Array.isArray(item.tags)) item.tags = [];
+    const wrap = el("div", "admin-tags");
+
+    item.tags.forEach((tag, ti) => {
+      const chip = el("div", "admin-tag");
+      const input = el("input", "admin-tag__input");
+      input.type = "text";
+      input.value = tag == null ? "" : String(tag);
+      input.size = Math.max(3, input.value.length);
+      input.setAttribute("aria-label", "Tag text");
+      input.addEventListener("input", () => {
+        item.tags[ti] = input.value;
+        input.size = Math.max(3, input.value.length);
+        markDirty();
+      });
+      const rm = el("button", "admin-tag__rm", "×");
+      rm.type = "button";
+      rm.title = "Remove tag";
+      rm.setAttribute("aria-label", "Remove tag");
+      rm.addEventListener("click", () => {
+        item.tags.splice(ti, 1);
+        markDirty();
+        rerenderCard();
+      });
+      chip.appendChild(input);
+      chip.appendChild(rm);
+      wrap.appendChild(chip);
+    });
+
+    const add = el("button", "admin-tag-add", "+ add tag");
+    add.type = "button";
+    add.addEventListener("click", () => {
+      item.tags.push("");
+      markDirty();
+      rerenderCard(true);
+    });
+    wrap.appendChild(add);
+
+    return wrap;
+  }
+
+  // One projects/experience sub-card. `kind` is "projects" | "experience".
+  // `rerender` rebuilds the whole block's item list (used after delete/reorder,
+  // where indices shift); tag add/remove re-renders just this card in place.
+  function buildItemCard(block, idx, kind, rerender) {
+    const items = block.items;
+    const item = items[idx];
+    const card = el("div", "admin-subcard");
+
+    card.appendChild(subCardHead(items, idx, rerender));
+
+    const name = textField("Name", item.name, "Name", (v) => {
+      item.name = v;
+      markDirty();
+    });
+    name.input.classList.add("admin-subcard__name-input");
+    card.appendChild(name.field);
+
+    if (kind === "experience") {
+      card.appendChild(
+        textField("Subtitle", item.subtitle, "Role · dates", (v) => {
+          item.subtitle = v;
+          markDirty();
+        }).field
+      );
+    }
+
+    card.appendChild(
+      textareaField("Description", item.description, "Plain-text description…", (v) => {
+        item.description = v;
+        markDirty();
+      })
+    );
+
+    const tagsField = el("div", "admin-subfield");
+    tagsField.appendChild(el("span", "admin-subfield__label", "Tags"));
+    tagsField.appendChild(
+      buildTags(item, (focusNew) => {
+        // Surgical re-render of just this card (index unchanged by a tag edit).
+        const fresh = buildItemCard(block, idx, kind, rerender);
+        card.replaceWith(fresh);
+        if (focusNew) {
+          const inputs = fresh.querySelectorAll(".admin-tag__input");
+          const last = inputs[inputs.length - 1];
+          if (last) last.focus();
+        }
+      })
+    );
+    card.appendChild(tagsField);
+
+    if (kind === "projects") {
+      card.appendChild(
+        textField("GitHub URL", item.github, "https://github.com/…", (v) => {
+          item.github = v;
+          markDirty();
+        }).field
+      );
+    }
+
+    return card;
+  }
+
+  // Projects/experience block editor (card list). Only this block's item host is
+  // re-rendered on structural change.
+  function buildItemListEditor(block, kind) {
+    if (!Array.isArray(block.items)) block.items = [];
     const wrap = el("div", "admin-field");
-    const box = el("div", "admin-placeholder");
-    const n = count(block.items);
-    const noun = block.type === "socials" ? "link" : "card";
-    box.appendChild(
-      el("div", "admin-placeholder__count", n + " " + noun + (n === 1 ? "" : "s"))
+    const host = el("div", "admin-subcards");
+    wrap.appendChild(host);
+
+    function renderItems(focusIdx) {
+      host.replaceChildren();
+      block.items.forEach((_, idx) =>
+        host.appendChild(buildItemCard(block, idx, kind, renderItems))
+      );
+      if (focusIdx != null) {
+        const card = host.children[focusIdx];
+        const input = card && card.querySelector(".admin-subcard__name-input");
+        if (input) {
+          input.focus();
+          input.select();
+        }
+      }
+    }
+
+    const add = el("button", "admin-btn admin-btn--sm admin-addcard", "+ Add card");
+    add.type = "button";
+    add.addEventListener("click", () => {
+      block.items.push(
+        kind === "projects"
+          ? { name: "New project", description: "", tags: [], github: "" }
+          : { name: "New role", subtitle: "", description: "", tags: [] }
+      );
+      markDirty();
+      renderItems(block.items.length - 1);
+    });
+
+    renderItems();
+    wrap.appendChild(add);
+    return wrap;
+  }
+
+  function buildProjects(block) {
+    return buildItemListEditor(block, "projects");
+  }
+
+  function buildExperience(block) {
+    return buildItemListEditor(block, "experience");
+  }
+
+  // One social link sub-card: name, url, and an icon <select> (with a live SVG
+  // preview in the header). Icon change updates the preview without a re-render.
+  function buildSocialCard(block, idx, rerender) {
+    const items = block.items;
+    const item = items[idx];
+    const card = el("div", "admin-subcard");
+
+    const preview = el("span", "admin-social-preview");
+    preview.appendChild(iconSvg(item.icon));
+    card.appendChild(subCardHead(items, idx, rerender, preview));
+
+    const name = textField("Name", item.name, "Label (aria-label)", (v) => {
+      item.name = v;
+      markDirty();
+    });
+    name.input.classList.add("admin-subcard__name-input");
+    card.appendChild(name.field);
+
+    card.appendChild(
+      textField("URL", item.url, "https://… or mailto:…", (v) => {
+        item.url = v;
+        markDirty();
+      }).field
     );
-    box.appendChild(
-      el("div", "admin-placeholder__note", "Structured editing coming next.")
-    );
-    wrap.appendChild(box);
+
+    const iconField = el("label", "admin-subfield");
+    iconField.appendChild(el("span", "admin-subfield__label", "Icon"));
+    const sel = el("select", "admin-select admin-select--icon");
+    ICON_KEYS.forEach((key) => {
+      const o = el("option", null, key);
+      o.value = key;
+      if ((item.icon || "github") === key) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.addEventListener("change", () => {
+      item.icon = sel.value;
+      markDirty();
+      preview.replaceChildren(iconSvg(item.icon));
+    });
+    iconField.appendChild(sel);
+    card.appendChild(iconField);
+
+    return card;
+  }
+
+  function buildSocials(block) {
+    if (!Array.isArray(block.items)) block.items = [];
+    const wrap = el("div", "admin-field");
+    const host = el("div", "admin-subcards");
+    wrap.appendChild(host);
+
+    function renderItems(focusIdx) {
+      host.replaceChildren();
+      block.items.forEach((_, idx) =>
+        host.appendChild(buildSocialCard(block, idx, renderItems))
+      );
+      if (focusIdx != null) {
+        const card = host.children[focusIdx];
+        const input = card && card.querySelector(".admin-subcard__name-input");
+        if (input) {
+          input.focus();
+          input.select();
+        }
+      }
+    }
+
+    const add = el("button", "admin-btn admin-btn--sm admin-addcard", "+ Add");
+    add.type = "button";
+    add.addEventListener("click", () => {
+      block.items.push({ name: "Link", url: "https://", icon: "github" });
+      markDirty();
+      renderItems(block.items.length - 1);
+    });
+
+    renderItems();
+    wrap.appendChild(add);
     return wrap;
   }
 
@@ -473,9 +805,9 @@
     richtext: buildRichtext,
     list: buildList,
     portrait: buildPortrait,
-    projects: buildPlaceholder,
-    experience: buildPlaceholder,
-    socials: buildPlaceholder,
+    projects: buildProjects,
+    experience: buildExperience,
+    socials: buildSocials,
   };
 
   // --- one block card -----------------------------------------------------
