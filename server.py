@@ -35,14 +35,18 @@ Notable flags (see --help):
 from __future__ import annotations
 
 import argparse
+import datetime
+import html
 import json
 import os
+import re
 import secrets
 import sys
 import threading
 import time
 import urllib.parse
 import urllib.request
+from html.parser import HTMLParser
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -82,6 +86,48 @@ MIME_TYPES = {
     ".woff2": "font/woff2",
     ".txt": "text/plain; charset=utf-8",
 }
+
+# --- Blog: slugs and HTML sanitize -------------------------------------------
+
+# A slug is both a filename (<data>/posts/<slug>.json) AND a URL segment, so it
+# is validated against this strict regex on every read/write. It permits only
+# lowercase letters, digits and hyphens, must start with an alphanumeric, and is
+# capped at 81 chars. This makes path traversal (`../`, absolute paths, NUL,
+# dots) structurally impossible — a valid slug can never contain a separator.
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,80}$")
+
+# HTML sanitize allow-list (stdlib HTMLParser, not regex). Everything not listed
+# here is dropped. `<script>`/`<style>` are dropped WITH their contents; other
+# disallowed tags are dropped but their text children are kept and escaped. Any
+# `on*` event-handler attribute is stripped, and href/src URLs using
+# javascript:/vbscript:/data: (except data:image/...) are neutralized. This is
+# defense-in-depth for a single-author blog; the body still comes from a trusted
+# editor (Quill, in C5b) and /uploads already sends nosniff.
+SANITIZE_ALLOWED_TAGS = {
+    "p", "br", "hr", "span", "div",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "strong", "b", "em", "i", "u", "s", "strike", "sub", "sup",
+    "a", "img",
+    "ul", "ol", "li",
+    "blockquote", "code", "pre",
+}
+# Per-tag attribute allow-list. Tags absent here keep no attributes at all.
+SANITIZE_ALLOWED_ATTRS = {
+    "a": {"href", "title", "target", "rel"},
+    "img": {"src", "alt", "title", "width", "height"},
+    "span": {"class"},
+    "div": {"class"},
+    "code": {"class"},
+    "pre": {"class"},
+    "ol": {"start"},
+    "li": {"class"},
+}
+# Void elements are emitted self-closing and have no end tag.
+SANITIZE_VOID_TAGS = {"br", "hr", "img"}
+# Dropped WITH their contents (children discarded, not just the tag).
+SANITIZE_DROP_TAGS = {"script", "style"}
+# Attributes that carry URLs and must be scheme-checked.
+SANITIZE_URL_ATTRS = {"href", "src"}
 
 
 # --- Google token verification ----------------------------------------------
@@ -153,6 +199,9 @@ class App:
         # ONLY part of the data dir ever served over HTTP (via GET /uploads/…);
         # the rest (sessions.json, content.json) stays unreachable.
         self.uploads_dir = os.path.join(self.data_dir, "uploads")
+        # Blog posts live as one JSON file per slug under posts/. Never served
+        # as static files — only through the /api/posts and /blog routes.
+        self.posts_dir = os.path.join(self.data_dir, "posts")
 
         # Warn loudly if the data dir lives under the served site root: the
         # static handler already refuses to serve it, but keeping sessions out
@@ -255,6 +304,82 @@ class App:
         os.replace(tmp, path)
         return "/uploads/" + filename
 
+    # --- posts store --------------------------------------------------------
+    # All post file access goes through _post_path, which re-validates the slug
+    # and confines the resolved path to posts_dir (defense-in-depth on top of
+    # the SLUG_RE check callers already apply).
+
+    def _post_path(self, slug):
+        if not SLUG_RE.match(slug or ""):
+            return None
+        root = os.path.realpath(self.posts_dir)
+        path = os.path.realpath(os.path.join(root, slug + ".json"))
+        if not path.startswith(root + os.sep):
+            return None
+        return path
+
+    def read_post(self, slug):
+        """Return the post dict for `slug`, or None if absent/invalid."""
+        path = self._post_path(slug)
+        if not path:
+            return None
+        with self._lock:
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    obj = json.load(fh)
+                    return obj if isinstance(obj, dict) else None
+            except (FileNotFoundError, ValueError):
+                return None
+
+    def list_posts(self):
+        """Return all post dicts (unsorted, unfiltered — caller decides)."""
+        out = []
+        with self._lock:
+            try:
+                names = os.listdir(self.posts_dir)
+            except FileNotFoundError:
+                names = []
+            for name in names:
+                if not name.endswith(".json"):
+                    continue
+                try:
+                    with open(os.path.join(self.posts_dir, name), "r",
+                              encoding="utf-8") as fh:
+                        obj = json.load(fh)
+                except (OSError, ValueError):
+                    continue
+                if isinstance(obj, dict):
+                    out.append(obj)
+        return out
+
+    def existing_slugs(self):
+        with self._lock:
+            try:
+                return {n[:-5] for n in os.listdir(self.posts_dir)
+                        if n.endswith(".json")}
+            except FileNotFoundError:
+                return set()
+
+    def write_post(self, slug, obj):
+        path = self._post_path(slug)
+        if not path:
+            return False
+        with self._lock:
+            os.makedirs(self.posts_dir, exist_ok=True)
+            _atomic_write_json(path, obj)
+        return True
+
+    def delete_post(self, slug):
+        path = self._post_path(slug)
+        if not path:
+            return False
+        with self._lock:
+            try:
+                os.remove(path)
+                return True
+            except FileNotFoundError:
+                return False
+
 
 def _atomic_write_json(path, obj):
     """Write JSON to `path` atomically (temp file in the same dir + os.replace)."""
@@ -265,6 +390,324 @@ def _atomic_write_json(path, obj):
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
+
+
+# --- Blog helpers: slug, sanitize, text, page rendering ----------------------
+
+def slugify(title):
+    """Derive a valid slug from a title: lowercase, non-alphanumerics -> single
+    hyphens, trimmed. Falls back to "post" if nothing usable remains. Capped
+    short enough that a "-2"/"-3" uniqueness suffix still satisfies SLUG_RE."""
+    s = (title or "").lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    s = s[:72].strip("-")
+    if not s or not SLUG_RE.match(s):
+        return "post"
+    return s
+
+
+def unique_slug(base, existing):
+    """Return `base`, or base-2/base-3/... until it is not in `existing`."""
+    slug = base
+    n = 2
+    while slug in existing:
+        slug = f"{base}-{n}"
+        n += 1
+    return slug
+
+
+def _safe_url(value):
+    """Return the URL if safe to keep, else None. Neutralizes javascript:,
+    vbscript: and data: URLs — except data:image/... which is allowed so inline
+    images still work. Leading control/whitespace chars (which browsers ignore
+    when resolving the scheme) are stripped before the check."""
+    v = (value or "").strip()
+    # A scheme cannot contain these; stripping them prevents `java\tscript:` etc.
+    probe = re.sub(r"[\x00-\x20]+", "", v).lower()
+    if probe.startswith(("javascript:", "vbscript:")):
+        return None
+    if probe.startswith("data:") and not probe.startswith("data:image/"):
+        return None
+    return v
+
+
+class _Sanitizer(HTMLParser):
+    """Whitelist HTML sanitizer built on the stdlib parser (no regex on markup,
+    no bleach). See SANITIZE_* constants for the allowed tag/attr set."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out = []
+        self._drop_depth = 0  # >0 while inside a script/style subtree
+
+    def _render_start(self, tag, attrs, self_close):
+        allowed = SANITIZE_ALLOWED_ATTRS.get(tag, ())
+        parts = [tag]
+        for name, val in attrs:
+            name = name.lower()
+            if name.startswith("on") or name not in allowed:
+                continue
+            if val is None:
+                parts.append(name)
+                continue
+            if name in SANITIZE_URL_ATTRS:
+                safe = _safe_url(val)
+                if safe is None:
+                    continue
+                val = safe
+            parts.append(f'{name}="{html.escape(val, quote=True)}"')
+        inner = " ".join(parts)
+        return f"<{inner} />" if self_close else f"<{inner}>"
+
+    def handle_starttag(self, tag, attrs):
+        if tag in SANITIZE_DROP_TAGS:
+            self._drop_depth += 1
+            return
+        if self._drop_depth or tag not in SANITIZE_ALLOWED_TAGS:
+            return
+        self.out.append(
+            self._render_start(tag, attrs, tag in SANITIZE_VOID_TAGS))
+
+    def handle_startendtag(self, tag, attrs):
+        if tag in SANITIZE_DROP_TAGS or self._drop_depth:
+            return
+        if tag not in SANITIZE_ALLOWED_TAGS:
+            return
+        self.out.append(self._render_start(tag, attrs, True))
+
+    def handle_endtag(self, tag):
+        if tag in SANITIZE_DROP_TAGS:
+            if self._drop_depth:
+                self._drop_depth -= 1
+            return
+        if self._drop_depth or tag not in SANITIZE_ALLOWED_TAGS:
+            return
+        if tag in SANITIZE_VOID_TAGS:
+            return
+        self.out.append(f"</{tag}>")
+
+    def handle_data(self, data):
+        if self._drop_depth:
+            return
+        self.out.append(html.escape(data, quote=False))
+
+
+def sanitize_html(raw):
+    """Return a sanitized copy of `raw` HTML (see SANITIZE_* / _Sanitizer)."""
+    if not raw:
+        return ""
+    parser = _Sanitizer()
+    try:
+        parser.feed(str(raw))
+        parser.close()
+    except Exception:
+        # Never store un-sanitized markup: on any parse error, fall back to a
+        # fully escaped (inert) version of the input.
+        return html.escape(str(raw))
+    return "".join(parser.out)
+
+
+# Block-level tags: their boundaries become whitespace when flattening to text,
+# so "<p>a</p><p>b</p>" reads "a b" (not "ab") in excerpts.
+_TEXT_BLOCK_TAGS = {
+    "p", "br", "hr", "div", "li", "ul", "ol", "blockquote", "pre",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+}
+
+
+class _TextExtractor(HTMLParser):
+    """Collects visible text (skipping script/style) for excerpt generation."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self._drop_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in SANITIZE_DROP_TAGS:
+            self._drop_depth += 1
+        elif tag in _TEXT_BLOCK_TAGS:
+            self.parts.append(" ")
+
+    def handle_endtag(self, tag):
+        if tag in SANITIZE_DROP_TAGS and self._drop_depth:
+            self._drop_depth -= 1
+        elif tag in _TEXT_BLOCK_TAGS:
+            self.parts.append(" ")
+
+    def handle_data(self, data):
+        if not self._drop_depth:
+            self.parts.append(data)
+
+
+def html_to_text(raw):
+    parser = _TextExtractor()
+    try:
+        parser.feed(str(raw or ""))
+        parser.close()
+    except Exception:
+        return ""
+    return re.sub(r"\s+", " ", "".join(parser.parts)).strip()
+
+
+def make_excerpt(html_body, limit=200):
+    text = html_to_text(html_body)
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip() + "…"
+
+
+def clean_tags(value):
+    """Coerce arbitrary input into a clean list of short string tags."""
+    if not isinstance(value, list):
+        return []
+    out = []
+    for tag in value:
+        if isinstance(tag, str):
+            tag = tag.strip()
+            if tag:
+                out.append(tag[:40])
+    return out[:20]
+
+
+def valid_date(value):
+    """Return `value` if it is an ISO YYYY-MM-DD date, else None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        datetime.date.fromisoformat(value)
+        return value
+    except ValueError:
+        return None
+
+
+def _now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def post_summary(post, include_draft=False):
+    """A list-view summary of a post (no full html)."""
+    summary = {
+        "slug": post.get("slug"),
+        "title": post.get("title"),
+        "excerpt": post.get("excerpt", ""),
+        "date": post.get("date"),
+        "tags": post.get("tags") or [],
+    }
+    if include_draft:
+        summary["draft"] = bool(post.get("draft"))
+    return summary
+
+
+def _post_sort_key(post):
+    # Newest first: order by publish date, then creation timestamp as tiebreak.
+    return (post.get("date") or "", post.get("created") or "")
+
+
+# --- Server-rendered public blog pages ---------------------------------------
+
+_FAVICON = ("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' "
+            "viewBox='0 0 100 100'><text y='.9em' font-size='90'>📝</text></svg>")
+
+
+def _page_shell(page_title, body_html, description=""):
+    """Wrap page body in the site chrome (nav, fonts, style.css). Matches
+    index.html so blog pages inherit the site's look."""
+    return (
+        "<!DOCTYPE html>\n"
+        "<html lang=\"en\">\n"
+        "<head>\n"
+        "  <meta charset=\"UTF-8\">\n"
+        "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+        f"  <meta name=\"description\" content=\"{html.escape(description, quote=True)}\">\n"
+        f"  <title>{html.escape(page_title)}</title>\n"
+        f"  <link rel=\"icon\" href=\"{_FAVICON}\">\n"
+        "  <link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n"
+        "  <link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n"
+        "  <link href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap\" rel=\"stylesheet\">\n"
+        "  <link rel=\"stylesheet\" href=\"/style.css\">\n"
+        "</head>\n"
+        "<body>\n"
+        "  <nav class=\"nav\">\n"
+        "    <div class=\"container\">\n"
+        "      <a href=\"/\" class=\"nav__logo\">Andrei Suslov</a>\n"
+        "    </div>\n"
+        "  </nav>\n"
+        f"  <main class=\"container\">\n{body_html}\n  </main>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+
+
+def _render_meta(post):
+    """The date + tags line shared by index and post pages (all text escaped)."""
+    bits = []
+    date = post.get("date")
+    if date:
+        bits.append(f"<time datetime=\"{html.escape(str(date), quote=True)}\">"
+                    f"{html.escape(str(date))}</time>")
+    tags = post.get("tags") or []
+    if tags:
+        spans = "".join(
+            f"<span class=\"tag\">{html.escape(str(t))}</span>" for t in tags)
+        bits.append(f"<span class=\"blog__tags\">{spans}</span>")
+    if not bits:
+        return ""
+    return "<div class=\"blog__meta\">" + " ".join(bits) + "</div>"
+
+
+def render_blog_index(posts):
+    if posts:
+        items = []
+        for post in posts:
+            slug = post.get("slug") or ""
+            href = "/blog/" + urllib.parse.quote(slug)
+            excerpt = post.get("excerpt") or ""
+            items.append(
+                "      <li class=\"blog__item\">\n"
+                f"        <a class=\"blog__item-link\" href=\"{html.escape(href, quote=True)}\">"
+                f"<h2 class=\"blog__item-title\">{html.escape(post.get('title') or slug)}</h2></a>\n"
+                f"        {_render_meta(post)}\n"
+                f"        <p class=\"blog__excerpt\">{html.escape(excerpt)}</p>\n"
+                "      </li>"
+            )
+        body = ("    <section class=\"blog\">\n"
+                "      <h1 class=\"blog__title\">Blog</h1>\n"
+                "      <ul class=\"blog__list\">\n"
+                + "\n".join(items) +
+                "\n      </ul>\n    </section>")
+    else:
+        body = ("    <section class=\"blog\">\n"
+                "      <h1 class=\"blog__title\">Blog</h1>\n"
+                "      <p class=\"blog__empty\">No posts yet.</p>\n"
+                "    </section>")
+    return _page_shell("Blog — Andrei Suslov", body,
+                       "Writing by Andrei Suslov.")
+
+
+def render_blog_post(post):
+    slug = post.get("slug") or ""
+    title = post.get("title") or slug
+    # The body was sanitized on store; inject it as-is (do NOT escape it).
+    body = (
+        "    <article class=\"post\">\n"
+        f"      <h1 class=\"post__title\">{html.escape(title)}</h1>\n"
+        f"      {_render_meta(post)}\n"
+        f"      <div class=\"post__body\">{post.get('html') or ''}</div>\n"
+        "      <p class=\"post__back\"><a href=\"/blog\">← Back to blog</a></p>\n"
+        "    </article>"
+    )
+    description = post.get("excerpt") or make_excerpt(post.get("html") or "")
+    return _page_shell(f"{title} — Andrei Suslov", body, description)
+
+
+def render_blog_404():
+    body = ("    <section class=\"blog\">\n"
+            "      <h1 class=\"blog__title\">Not found</h1>\n"
+            "      <p class=\"blog__empty\">That post doesn’t exist. "
+            "<a href=\"/blog\">← Back to blog</a></p>\n"
+            "    </section>")
+    return _page_shell("Not found — Andrei Suslov", body)
 
 
 # --- HTTP handler ------------------------------------------------------------
@@ -392,8 +835,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._api_me()
         if path == "/api/content":
             return self._api_get_content()
+        if path == "/api/posts":
+            return self._api_list_posts()
+        if path.startswith("/api/posts/"):
+            return self._api_get_post(path[len("/api/posts/"):])
         if path.startswith("/api/"):
             return self._finish(HTTPStatus.NOT_FOUND, self._json, {"error": "not found"})
+        # Server-rendered public blog pages (published posts only).
+        if path == "/blog" or path == "/blog/":
+            return self._blog_index()
+        if path.startswith("/blog/"):
+            return self._blog_post(path[len("/blog/"):])
         # Uploaded images are public and served from the data dir's uploads/
         # subdir (NOT the site root). Kept above _static so the site handler
         # never sees these paths.
@@ -423,12 +875,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._api_auth_logout()
         if path == "/api/uploads":
             return self._api_upload()
+        if path == "/api/posts":
+            return self._api_create_post()
         return self._finish(HTTPStatus.NOT_FOUND, self._json, {"error": "not found"})
 
     def do_PUT(self):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/api/content":
             return self._api_put_content()
+        if path.startswith("/api/posts/"):
+            return self._api_update_post(path[len("/api/posts/"):])
+        return self._finish(HTTPStatus.NOT_FOUND, self._json, {"error": "not found"})
+
+    def do_DELETE(self):
+        path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/api/posts/"):
+            return self._api_delete_post(path[len("/api/posts/"):])
         return self._finish(HTTPStatus.NOT_FOUND, self._json, {"error": "not found"})
 
     # -- routing helpers ----------------------------------------------------
@@ -615,6 +1077,176 @@ class Handler(BaseHTTPRequestHandler):
                                 {"error": "content must be an object"})
         self.app.write_content(obj)
         return self._finish(HTTPStatus.OK, self._json, {"ok": True})
+
+    # -- API: posts ---------------------------------------------------------
+
+    def _post_slug(self, raw):
+        """Decode a slug from a URL path segment and validate it. Returns the
+        slug, or None if it fails SLUG_RE (which is also what blocks traversal
+        payloads like `..%2f..%2fsessions`)."""
+        slug = urllib.parse.unquote(raw)
+        return slug if SLUG_RE.match(slug) else None
+
+    def _read_json_object(self):
+        """Read + parse a JSON object body. Returns (obj, None) on success or
+        (None, response_already_sent_flag) where the error response is sent
+        here. Callers check `obj is None`."""
+        ok, raw = self._read_body()
+        if not ok:
+            self._log(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return None, True
+        try:
+            obj = json.loads(raw or b"")
+        except ValueError:
+            self._finish(HTTPStatus.BAD_REQUEST, self._json,
+                         {"error": "invalid json"})
+            return None, True
+        if not isinstance(obj, dict):
+            self._finish(HTTPStatus.BAD_REQUEST, self._json,
+                         {"error": "body must be an object"})
+            return None, True
+        return obj, False
+
+    def _api_list_posts(self):
+        """List posts, newest first. Public callers see published summaries;
+        the owner (valid session) additionally sees drafts, each flagged."""
+        owner = self._session() is not None
+        posts = sorted(self.app.list_posts(), key=_post_sort_key, reverse=True)
+        items = [post_summary(p, include_draft=owner)
+                 for p in posts if owner or not p.get("draft")]
+        return self._finish(HTTPStatus.OK, self._json, {"posts": items})
+
+    def _api_get_post(self, raw):
+        slug = self._post_slug(raw)
+        if not slug:
+            return self._finish(HTTPStatus.NOT_FOUND, self._json,
+                                {"error": "not found"})
+        post = self.app.read_post(slug)
+        # Drafts are invisible to the public — 404 (not 403) so their existence
+        # isn't leaked; the owner sees them.
+        if not post or (post.get("draft") and not self._session()):
+            return self._finish(HTTPStatus.NOT_FOUND, self._json,
+                                {"error": "not found"})
+        return self._finish(HTTPStatus.OK, self._json, post)
+
+    def _api_create_post(self):
+        if not self._session():
+            return self._finish(HTTPStatus.UNAUTHORIZED, self._json,
+                                {"error": "unauthorized"})
+        if not self._origin_ok():
+            return self._finish(HTTPStatus.FORBIDDEN, self._json,
+                                {"error": "bad origin"})
+        obj, _ = self._read_json_object()
+        if obj is None:
+            return
+        title = str(obj.get("title") or "").strip()
+        if not title:
+            return self._finish(HTTPStatus.BAD_REQUEST, self._json,
+                                {"error": "title required"})
+        # Slug: accept an explicit valid + unused one, else derive from title
+        # and disambiguate against existing files.
+        supplied = obj.get("slug")
+        if supplied not in (None, ""):
+            slug = str(supplied)
+            if not SLUG_RE.match(slug):
+                return self._finish(HTTPStatus.BAD_REQUEST, self._json,
+                                    {"error": "invalid slug"})
+            if self.app.read_post(slug):
+                return self._finish(HTTPStatus.CONFLICT, self._json,
+                                    {"error": "slug already exists"})
+        else:
+            slug = unique_slug(slugify(title), self.app.existing_slugs())
+        clean_html = sanitize_html(obj.get("html") or "")
+        excerpt = str(obj.get("excerpt") or "").strip() or make_excerpt(clean_html)
+        now = _now_iso()
+        post = {
+            "slug": slug,
+            "title": title,
+            "html": clean_html,
+            "excerpt": excerpt,
+            "tags": clean_tags(obj.get("tags")),
+            "date": valid_date(obj.get("date")) or datetime.date.today().isoformat(),
+            "created": now,
+            "updated": now,
+            "draft": bool(obj.get("draft")),
+        }
+        if not self.app.write_post(slug, post):
+            return self._finish(HTTPStatus.BAD_REQUEST, self._json,
+                                {"error": "invalid slug"})
+        return self._finish(HTTPStatus.CREATED, self._json, post)
+
+    def _api_update_post(self, raw):
+        """Update an existing post. The slug is IMMUTABLE on PUT — only the
+        listed fields are merged; html is re-sanitized and `updated` is bumped."""
+        if not self._session():
+            return self._finish(HTTPStatus.UNAUTHORIZED, self._json,
+                                {"error": "unauthorized"})
+        if not self._origin_ok():
+            return self._finish(HTTPStatus.FORBIDDEN, self._json,
+                                {"error": "bad origin"})
+        slug = self._post_slug(raw)
+        post = self.app.read_post(slug) if slug else None
+        if not post:
+            return self._finish(HTTPStatus.NOT_FOUND, self._json,
+                                {"error": "not found"})
+        obj, _ = self._read_json_object()
+        if obj is None:
+            return
+        if "title" in obj:
+            title = str(obj.get("title") or "").strip()
+            if not title:
+                return self._finish(HTTPStatus.BAD_REQUEST, self._json,
+                                    {"error": "title required"})
+            post["title"] = title
+        if "html" in obj:
+            post["html"] = sanitize_html(obj.get("html") or "")
+        if "excerpt" in obj:
+            post["excerpt"] = str(obj.get("excerpt") or "").strip()
+        if "tags" in obj:
+            post["tags"] = clean_tags(obj.get("tags"))
+        if "date" in obj:
+            date = valid_date(obj.get("date"))
+            if date:
+                post["date"] = date
+        if "draft" in obj:
+            post["draft"] = bool(obj.get("draft"))
+        post["slug"] = slug  # never changes
+        post["updated"] = _now_iso()
+        self.app.write_post(slug, post)
+        return self._finish(HTTPStatus.OK, self._json, post)
+
+    def _api_delete_post(self, raw):
+        if not self._session():
+            return self._finish(HTTPStatus.UNAUTHORIZED, self._json,
+                                {"error": "unauthorized"})
+        if not self._origin_ok():
+            return self._finish(HTTPStatus.FORBIDDEN, self._json,
+                                {"error": "bad origin"})
+        slug = self._post_slug(raw)
+        if not slug or not self.app.delete_post(slug):
+            return self._finish(HTTPStatus.NOT_FOUND, self._json,
+                                {"error": "not found"})
+        return self._finish(HTTPStatus.OK, self._json, {"ok": True})
+
+    # -- Public blog pages (server-rendered HTML) ---------------------------
+
+    def _blog_index(self):
+        posts = [p for p in self.app.list_posts() if not p.get("draft")]
+        posts.sort(key=_post_sort_key, reverse=True)
+        body = render_blog_index(posts)
+        self._send(HTTPStatus.OK, body, "text/html; charset=utf-8")
+        self._log(HTTPStatus.OK)
+
+    def _blog_post(self, raw):
+        slug = self._post_slug(raw)
+        post = self.app.read_post(slug) if slug else None
+        if not post or post.get("draft"):
+            self._send(HTTPStatus.NOT_FOUND, render_blog_404(),
+                       "text/html; charset=utf-8")
+            return self._log(HTTPStatus.NOT_FOUND)
+        self._send(HTTPStatus.OK, render_blog_post(post),
+                   "text/html; charset=utf-8")
+        self._log(HTTPStatus.OK)
 
     # -- API: uploads (auth'd write) ----------------------------------------
 
@@ -986,6 +1618,129 @@ def selftest():
         conn.close()
         check("18. GET /uploads/<file> sends X-Content-Type-Options: nosniff",
               (nosniff or "").lower() == "nosniff")
+
+        # --- blog posts ---------------------------------------------------
+        # `up_sid` (from the uploads section) is a valid owner session.
+
+        # 19. Create without a session -> 401.
+        s19, _, _ = request("POST", "/api/posts",
+                            body={"title": "Hello World", "html": "<p>hi</p>"},
+                            origin=origin)
+        check("19. POST /api/posts without session -> 401", s19 == 401)
+
+        # 20. Create with a session -> 201, slug generated from the title.
+        s20, b20, _ = request("POST", "/api/posts",
+                             body={"title": "Hello World",
+                                   "html": "<p>hello body</p>"},
+                             cookie=up_sid, origin=origin)
+        slug1 = b20.get("slug") if b20 else None
+        check("20. POST /api/posts (session) -> 201 + slug from title",
+              s20 == 201 and slug1 == "hello-world"
+              and b20.get("created") and b20.get("updated"))
+
+        # 21. Same title again -> a distinct, unique slug.
+        s21, b21, _ = request("POST", "/api/posts",
+                             body={"title": "Hello World",
+                                   "html": "<p>second</p>"},
+                             cookie=up_sid, origin=origin)
+        slug2 = b21.get("slug") if b21 else None
+        check("21. Second same-title post -> distinct slug",
+              s21 == 201 and slug2 == "hello-world-2" and slug2 != slug1)
+
+        # 22. Create a draft.
+        s22, b22, _ = request("POST", "/api/posts",
+                             body={"title": "Secret Draft",
+                                   "html": "<p>wip</p>", "draft": True},
+                             cookie=up_sid, origin=origin)
+        draft_slug = b22.get("slug") if b22 else None
+        check("22. Create a draft -> 201 + draft slug",
+              s22 == 201 and draft_slug == "secret-draft"
+              and b22.get("draft") is True)
+
+        # 23. Public list hides drafts; owner list shows them flagged.
+        _, pub_list, _ = request("GET", "/api/posts")
+        pub_slugs = {p["slug"] for p in (pub_list or {}).get("posts", [])}
+        _, own_list, _ = request("GET", "/api/posts", cookie=up_sid)
+        own_posts = (own_list or {}).get("posts", [])
+        own_slugs = {p["slug"] for p in own_posts}
+        own_draft_flag = any(p["slug"] == draft_slug and p.get("draft") is True
+                             for p in own_posts)
+        no_html_in_summary = all("html" not in p for p in own_posts)
+        check("23. Public list hides drafts; owner sees them flagged (no html)",
+              draft_slug not in pub_slugs and slug1 in pub_slugs
+              and draft_slug in own_slugs and own_draft_flag
+              and no_html_in_summary)
+
+        # 24. Single draft: 404 for the public, 200 for the owner.
+        s24pub, _, _ = request("GET", "/api/posts/" + draft_slug)
+        s24own, b24own, _ = request("GET", "/api/posts/" + draft_slug,
+                                    cookie=up_sid)
+        check("24. GET draft post -> 404 public, 200 owner",
+              s24pub == 404 and s24own == 200
+              and b24own.get("slug") == draft_slug)
+
+        # 25. Sanitizer: a <script> in submitted html is stripped on store.
+        s25, b25, _ = request("POST", "/api/posts",
+                             body={"title": "Script Test",
+                                   "html": "<p>ok</p><script>alert(1)</script>"
+                                           "<a href=\"javascript:evil()\">x</a>"},
+                             cookie=up_sid, origin=origin)
+        stored_html = b25.get("html", "") if b25 else ""
+        check("25. Sanitizer strips <script> and javascript: URLs on store",
+              s25 == 201 and "<script" not in stored_html
+              and "alert(1)" not in stored_html and "ok" in stored_html
+              and "javascript:" not in stored_html)
+
+        # 26. PUT is auth-gated; with a session it updates and bumps `updated`.
+        s26no, _, _ = request("PUT", "/api/posts/" + slug2,
+                              body={"title": "Renamed"}, origin=origin)
+        s26yes, b26, _ = request("PUT", "/api/posts/" + slug2,
+                                body={"title": "Renamed"}, cookie=up_sid,
+                                origin=origin)
+        check("26. PUT /api/posts/<slug> -> 401 no session, 200 owner (slug kept)",
+              s26no == 401 and s26yes == 200
+              and b26.get("title") == "Renamed" and b26.get("slug") == slug2)
+
+        # 27. DELETE is auth-gated; with a session it removes the file.
+        s27no, _, _ = request("DELETE", "/api/posts/" + slug2, origin=origin)
+        s27yes, _, _ = request("DELETE", "/api/posts/" + slug2, cookie=up_sid,
+                               origin=origin)
+        s27gone, _, _ = request("GET", "/api/posts/" + slug2)
+        file_gone = not os.path.exists(
+            os.path.join(app.posts_dir, slug2 + ".json"))
+        check("27. DELETE -> 401 no session, 200 owner, file removed",
+              s27no == 401 and s27yes == 200 and s27gone == 404 and file_gone)
+
+        # 28. Blog index renders HTML.
+        bi_status, bi_ctype, bi_body = get_html("/blog")
+        check("28. GET /blog -> 200 HTML",
+              bi_status == 200 and "text/html" in bi_ctype
+              and b"Blog" in bi_body and slug1.encode() in bi_body)
+
+        # 29. Published post page renders and contains the title.
+        bp_status, bp_ctype, bp_body = get_html("/blog/" + slug1)
+        check("29. GET /blog/<published> -> 200 + contains title",
+              bp_status == 200 and "text/html" in bp_ctype
+              and b"Hello World" in bp_body and b"hello body" in bp_body)
+
+        # 30. Draft and nonexistent post pages -> 404.
+        bd_status, _, _ = get_html("/blog/" + draft_slug)
+        bn_status, _, _ = get_html("/blog/does-not-exist")
+        check("30. GET /blog/<draft> and /blog/<missing> -> 404",
+              bd_status == 404 and bn_status == 404)
+
+        # 31. Slug traversal is rejected and the posts dir never escaped.
+        st_api, _, _ = request("GET", "/api/posts/..%2f..%2fsessions")
+        st_put, _, _ = request("PUT", "/api/posts/..%2f..%2fsessions",
+                              body={"title": "x"}, cookie=up_sid, origin=origin)
+        st_post, _, _ = request("POST", "/api/posts",
+                              body={"title": "x", "slug": "../evil"},
+                              cookie=up_sid, origin=origin)
+        posts_files = sorted(os.listdir(app.posts_dir))
+        confined = all(SLUG_RE.match(n[:-5]) for n in posts_files
+                       if n.endswith(".json"))
+        check("31. Slug traversal rejected; posts dir stays confined",
+              st_api == 404 and st_put == 404 and st_post == 400 and confined)
 
     finally:
         httpd.shutdown()
