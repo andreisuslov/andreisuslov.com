@@ -467,6 +467,11 @@
           return res.json().then((data) => {
             block.src = (data && data.url) || "";
             markDirty();
+            // Only repaint the preview if this card's render is still current.
+            // If a re-render landed mid-upload the preview node is stale, so we
+            // skip it: block.src is already set on the doc, and the fresh card's
+            // renderPreview() (next render) shows the image — a brief empty
+            // state that self-heals, not a lost src.
             if (myRender === renderGen) renderPreview();
             restore();
             toast("Image uploaded", "success");

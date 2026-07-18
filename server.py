@@ -502,9 +502,11 @@ class Handler(BaseHTTPRequestHandler):
                                 "404 Not Found", "text/plain; charset=utf-8")
 
         rel = urllib.parse.unquote(url_path[len("/uploads/"):])
-        # A single flat filename only: reject empties, dotfiles, and anything
-        # with a path separator (which is what `../` traversal would carry).
-        if not rel or "/" in rel or "\\" in rel or rel.startswith("."):
+        # A single flat filename only: reject empties, dotfiles, path separators
+        # (what `../` traversal would carry), and NUL bytes — an embedded NUL
+        # (e.g. x%00.png) otherwise makes os.path.realpath raise ValueError.
+        if (not rel or "/" in rel or "\\" in rel or "\x00" in rel
+                or rel.startswith(".")):
             return not_found()
 
         uploads_root = os.path.realpath(self.app.uploads_dir)
@@ -523,9 +525,13 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             return not_found()
         # Uploaded assets are immutable (unguessable names, never overwritten),
-        # so they can be cached hard.
-        self._send(HTTPStatus.OK, data, ctype,
-                   {"Cache-Control": "public, max-age=31536000, immutable"})
+        # so they can be cached hard. nosniff stops a browser from ever sniffing
+        # a mis-typed upload into executable same-origin content (these get
+        # embedded in author-authored HTML).
+        self._send(HTTPStatus.OK, data, ctype, {
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+        })
         self._log(HTTPStatus.OK)
 
     # -- API: auth ----------------------------------------------------------
@@ -964,6 +970,22 @@ def selftest():
         s16, _, _ = raw_request("GET", "/uploads/../sessions.json")
         check("16. GET /uploads/../sessions.json (traversal) -> 404",
               s16 == 404)
+
+        # 17. An embedded NUL in the name must be rejected as 404 (not raise a
+        #     ValueError from os.path.realpath -> uncaught 500).
+        s17, _, _ = raw_request("GET", "/uploads/x%00.png")
+        check("17. GET /uploads/x%00.png (null byte) -> 404", s17 == 404)
+
+        # 18. Served uploads carry X-Content-Type-Options: nosniff so a browser
+        #     never sniffs a mis-typed upload into executable same-origin content.
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", up_url)
+        nosniff_resp = conn.getresponse()
+        nosniff_resp.read()
+        nosniff = nosniff_resp.getheader("X-Content-Type-Options")
+        conn.close()
+        check("18. GET /uploads/<file> sends X-Content-Type-Options: nosniff",
+              (nosniff or "").lower() == "nosniff")
 
     finally:
         httpd.shutdown()
