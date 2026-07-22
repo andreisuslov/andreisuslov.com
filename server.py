@@ -1518,6 +1518,34 @@ def selftest():
         check("5c. GET /api/content returns the written object",
               status == 200 and body == payload)
 
+        # 5d. Canvas-layout docs round-trip: the visual builder stores
+        # doc-level layout {mode,width} and per-block frame {x,y,w}; the
+        # sanitizer must pass them through untouched while still sanitizing
+        # richtext html.
+        canvas_doc = {
+            "version": 1,
+            "layout": {"mode": "canvas", "width": 960},
+            "blocks": [
+                {"id": "h", "type": "heading", "level": 1, "text": "t",
+                 "frame": {"x": 10, "y": 20, "w": 300}},
+                {"id": "r", "type": "richtext",
+                 "html": "<p onclick=\"x()\">hi</p><script>bad()</script>",
+                 "frame": {"x": 10, "y": 90, "w": 480}},
+            ],
+        }
+        status, _, _ = request("PUT", "/api/content", body=canvas_doc,
+                               cookie=sid, origin=origin)
+        status2, body, _ = request("GET", "/api/content")
+        blocks = body.get("blocks", [{}, {}]) if isinstance(body, dict) else [{}, {}]
+        check("5d. canvas layout + frames round-trip, richtext still sanitized",
+              status == 200 and status2 == 200
+              and body.get("layout") == {"mode": "canvas", "width": 960}
+              and blocks[0].get("frame") == {"x": 10, "y": 20, "w": 300}
+              and blocks[1].get("frame") == {"x": 10, "y": 90, "w": 480}
+              and "script" not in blocks[1].get("html", "script")
+              and "onclick" not in blocks[1].get("html", "onclick")
+              and "hi" in blocks[1].get("html", ""))
+
         # 6. PUT non-object body -> 400
         status, _, _ = request("PUT", "/api/content", body=[1, 2, 3],
                                cookie=sid, origin=origin)

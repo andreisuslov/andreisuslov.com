@@ -85,8 +85,9 @@ function renderList(block) {
 }
 
 // Build one project/experience card. `withSubtitle` adds the role/date line
-// used by the experience grid.
-function buildCard(item, withSubtitle) {
+// used by the experience grid. `index` is stamped on the card so the on-page
+// editor can bind card fields back to `block.items[index]`.
+function buildCard(item, withSubtitle, index) {
   let card;
   if (item.github) {
     card = el("a");
@@ -97,6 +98,7 @@ function buildCard(item, withSubtitle) {
     card = el("div");
   }
   card.className = "project-card";
+  if (typeof index === "number") card.dataset.itemIndex = String(index);
 
   const name = el("h3", "project-card__name");
   name.textContent = item.name;
@@ -127,13 +129,13 @@ function buildCard(item, withSubtitle) {
 
 function renderProjects(block) {
   const grid = el("div", "projects__grid block block--grid fade-in");
-  (block.items || []).forEach((item) => grid.appendChild(buildCard(item, false)));
+  (block.items || []).forEach((item, i) => grid.appendChild(buildCard(item, false, i)));
   return grid;
 }
 
 function renderExperience(block) {
   const grid = el("div", "projects__grid block block--grid fade-in");
-  (block.items || []).forEach((item) => grid.appendChild(buildCard(item, true)));
+  (block.items || []).forEach((item, i) => grid.appendChild(buildCard(item, true, i)));
   return grid;
 }
 
@@ -175,11 +177,97 @@ const RENDERERS = {
   image: renderImage,
 };
 
+// --- Canvas layout ---------------------------------------------------------
+// A doc with `layout: {mode:"canvas", width}` positions each block absolutely
+// by its `frame: {x, y, w}` (design-space px; height is always auto from
+// content). Below the breakpoint frames are ignored and blocks stack in array
+// order — the editor keeps the array sorted by y on save, so the mobile order
+// matches the visual top-to-bottom order. Legacy docs (no `layout`) never
+// enter this path.
+
+const CANVAS_MQ = window.matchMedia("(min-width: 768px)");
+const CANVAS_PAD_BOTTOM = 48;
+const FRAMELESS_GAP = 24;
+
+function isCanvasDoc(content) {
+  return !!(content && content.layout && content.layout.mode === "canvas");
+}
+
+let canvasState = null; // { viewport, canvas, layout, observer }
+
+function teardownCanvas() {
+  if (canvasState) canvasState.observer.disconnect();
+  canvasState = null;
+}
+
+// Size the canvas to its blocks, stack any frameless blocks (e.g. added via
+// /admin) below the framed content, and scale the whole composition down when
+// the viewport is narrower than the design width. Re-runs whenever a block
+// resizes (images/fonts loading, text reflow after a width change).
+function relayoutCanvas() {
+  if (!canvasState) return;
+  const { viewport, canvas, layout } = canvasState;
+  const designWidth = layout.width || 960;
+
+  let maxY = 0;
+  const children = Array.from(canvas.children);
+  children.forEach((node) => {
+    if (node.dataset.frameless) return;
+    maxY = Math.max(maxY, node.offsetTop + node.offsetHeight);
+  });
+  let cursor = maxY;
+  children.forEach((node) => {
+    if (!node.dataset.frameless) return;
+    cursor += FRAMELESS_GAP;
+    node.style.left = "0px";
+    node.style.top = cursor + "px";
+    node.style.width = designWidth + "px";
+    cursor += node.offsetHeight;
+  });
+  const height = Math.max(maxY, cursor) + CANVAS_PAD_BOTTOM;
+  canvas.style.width = designWidth + "px";
+  canvas.style.height = height + "px";
+
+  // Scale-to-fit. The editor pins scale to 1 (body.editing) so pointer math
+  // stays in design-space px; a mid-size window scrolls horizontally instead.
+  let f = 1;
+  if (!document.body.classList.contains("editing")) {
+    const avail = Math.max(320, window.innerWidth - 48);
+    f = Math.min(1, avail / designWidth);
+  }
+  canvas.style.transform = f === 1 ? "" : "scale(" + f + ")";
+  canvas.style.transformOrigin = "top left";
+  viewport.style.width = Math.round(designWidth * f) + "px";
+  viewport.style.height = Math.round(height * f) + "px";
+}
+
 // Render a whole block document into #content, replacing whatever was there.
 function renderBlocks(content) {
   const root = document.getElementById("content");
   if (!root) return;
+  teardownCanvas();
   root.replaceChildren();
+
+  const useCanvas = isCanvasDoc(content) && CANVAS_MQ.matches;
+  root.classList.toggle("canvas-mode", useCanvas);
+  const main = root.closest("main");
+  if (main) main.classList.toggle("canvas-page", useCanvas);
+
+  let parent = root;
+  if (useCanvas) {
+    const viewport = el("div", "canvas-viewport");
+    const canvas = el("div", "canvas");
+    viewport.appendChild(canvas);
+    root.appendChild(viewport);
+    parent = canvas;
+    canvasState = {
+      viewport,
+      canvas,
+      layout: content.layout,
+      observer: new ResizeObserver(() => requestAnimationFrame(relayoutCanvas)),
+    };
+  }
+
   const blocks = content && Array.isArray(content.blocks) ? content.blocks : [];
   blocks.forEach((block) => {
     const fn = RENDERERS[block && block.type];
@@ -187,8 +275,21 @@ function renderBlocks(content) {
     const node = fn(block);
     if (!node) return;
     if (block.id) node.dataset.blockId = block.id;
-    root.appendChild(node);
+    if (useCanvas) {
+      const frame = block.frame;
+      node.style.position = "absolute";
+      if (frame && typeof frame.x === "number") {
+        node.style.left = frame.x + "px";
+        node.style.top = (frame.y || 0) + "px";
+        node.style.width = (frame.w || 200) + "px";
+      } else {
+        node.dataset.frameless = "1"; // placed below framed content by relayoutCanvas
+      }
+      canvasState.observer.observe(node);
+    }
+    parent.appendChild(node);
   });
+  if (useCanvas) relayoutCanvas();
 }
 
 // --- Scroll reveal ---------------------------------------------------------
@@ -258,14 +359,62 @@ function initFaceHover() {
 // object we re-render from it; on 404 or any error the default stands, so the
 // static file still works standalone.
 
+let currentDoc = null;
+
 function render(content) {
+  currentDoc = content;
   renderBlocks(content);
   revealVisible();
   initFaceHover();
 }
 
+// Re-render when the viewport crosses the canvas breakpoint (frames on/off),
+// and keep the scale-to-fit factor in sync with the window width.
+CANVAS_MQ.addEventListener("change", () => {
+  if (isCanvasDoc(currentDoc)) render(currentDoc);
+});
+window.addEventListener("resize", relayoutCanvas, { passive: true });
+
+// --- Owner edit bootstrap --------------------------------------------------
+// Visitors never see any of this: the Edit button only appears when /api/me
+// says the session belongs to the site owner, and editor.js (the on-page
+// visual builder) is imported on demand only then.
+
+const EDITOR_V = "20260722a";
+
+window.__site = {
+  getDoc: () => currentDoc,
+  render,
+  relayout: relayoutCanvas,
+};
+
+function initEditButton() {
+  fetch("/api/me", { credentials: "same-origin" })
+    .then((res) => (res.ok ? res.json() : null))
+    .then((me) => {
+      if (!me || me.editor !== true) return;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "edit-fab";
+      btn.textContent = "Edit";
+      btn.addEventListener("click", () => {
+        btn.disabled = true;
+        import("/editor.js?v=" + EDITOR_V)
+          .then((mod) => mod.initEditor(window.__site))
+          .finally(() => {
+            btn.disabled = false;
+          });
+      });
+      document.body.appendChild(btn);
+    })
+    .catch(() => {
+      // Signed out or server down: no button, page is fully read-only.
+    });
+}
+
 render(DEFAULT_CONTENT);
 initScrollEffects();
+initEditButton();
 
 fetch("/api/content", { credentials: "same-origin" })
   .then((res) => (res.ok ? res.json() : null))

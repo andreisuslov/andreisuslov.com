@@ -558,6 +558,60 @@ section {
   transform: translateY(0);
 }
 
+/* ===== CANVAS MODE (free-position layout, ≥768px) ===== */
+/* Blocks carry absolute frames set inline by the renderer; the rhythm margins
+   above would offset those positions, so they are reset here. .canvas keeps
+   design-space coordinates under a scale() transform while .canvas-viewport
+   reserves the scaled size in normal flow (transforms don't affect layout). */
+main.canvas-page {
+  max-width: none;
+}
+
+#content.canvas-mode .block {
+  margin: 0;
+}
+
+.canvas-viewport {
+  margin: 0 auto;
+  overflow: visible;
+}
+
+.canvas {
+  position: relative;
+}
+
+/* Owner-only floating Edit button (added by script.js after /api/me). */
+.edit-fab {
+  position: fixed;
+  right: var(--space-lg);
+  bottom: var(--space-lg);
+  z-index: 200;
+  padding: 10px 22px;
+  border: none;
+  border-radius: 999px;
+  background: var(--color-text);
+  color: var(--color-bg);
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  transition: opacity var(--transition-fast);
+}
+
+.edit-fab:hover {
+  opacity: 0.85;
+}
+
+.edit-fab:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+body.editing .edit-fab {
+  display: none;
+}
+
 /* ===== RESPONSIVE — TABLET ===== */
 @media (max-width: 768px) {
   :root {

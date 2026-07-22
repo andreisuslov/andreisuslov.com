@@ -24,8 +24,37 @@ has a stable `id`, a `type` (`portrait`, `heading`, `richtext`, `list`,
 - `style.css` / `face-serious.webp` / `face-happy.webp` — styles and the hero
   portrait (the grinning face swaps in on hover).
 
-To edit the homepage, use `/admin` (below), not a data file — content is stored
-server-side as `content.json`.
+### Canvas layout (free positioning)
+
+A doc may carry `layout: {mode: "canvas", width}` plus per-block
+`frame: {x, y, w}` (design-space px, height always auto). `script.js` then
+positions blocks absolutely inside a `.canvas` div: scale-to-fit shrinks the
+whole composition on viewports narrower than the design width, and below 768px
+frames are ignored entirely — blocks stack in array order (kept y-sorted on
+save), which is exactly the old mobile layout. Docs without `layout` render
+through the original flow path unchanged.
+
+## On-page visual builder (`editor.js`)
+
+The signed-in owner sees a floating **Edit** button on the homepage
+(`/api/me` gate); clicking it lazy-loads `editor.js` + `editor.css` — visitors
+never fetch them. The first activation on a flow doc migrates it to canvas by
+measuring the live rendering (nothing persists until Save). In the editor:
+
+- click selects; drag moves (`frame.x/y`); edge handles resize width; snap
+  guides against the canvas and other blocks (Alt disables)
+- double-click edits text in place: headings, paragraphs (with a small
+  bold/italic/link toolbar), list items (Enter/Backspace add/remove), card
+  names/subtitles/descriptions, tag chips; card ×/+ and social +/edit
+  affordances appear in edit mode
+- ⌘Z/⇧⌘Z undo/redo per gesture; Save PUTs to `/api/content` (y-sorting blocks
+  so mobile order matches), Discard/Exit recover the last saved state
+- no native alert/confirm/prompt — toasts, two-step confirms, and a floating
+  input panel instead (they'd block the renderer)
+
+`/admin` (below) remains as the structural/fallback editor; it preserves the
+`layout`/`frame` fields it doesn't know about, and blocks added there are
+auto-stacked below the canvas until the next on-page save frames them.
 
 ## Admin console (`/admin`)
 

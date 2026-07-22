@@ -13,9 +13,9 @@ const DEFAULT_CONTENT = {
       id: "portrait",
       type: "portrait",
       // width = rendered face width; offsetX = px the face sits left of the
-      // content column. 212 ≈ 180px + 2rem, matching the original gutter.
-      width: 180,
-      offsetX: 212,
+      // content column. offsetX ≈ width + 2rem keeps the gutter tight.
+      width: 102,
+      offsetX: 134,
     },
     {
       id: "hero-heading",
@@ -134,7 +134,7 @@ const DEFAULT_CONTENT = {
     {
       id: "contact-location",
       type: "richtext",
-      html: "Cambridge, MA",
+      html: "Cambridge, MA • Feb, 2026",
     },
     {
       id: "contact-socials",
